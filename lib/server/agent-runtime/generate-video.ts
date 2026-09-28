@@ -4,6 +4,7 @@ import { nanoid } from 'nanoid';
 import { Type, type Static } from 'typebox';
 
 import { generateVideo, normalizeVideoOptions, VIDEO_PROVIDERS } from '@/lib/media/video-providers';
+import { mediaProviderFetch } from '@/lib/server/media-provider-fetch';
 import type {
   VideoGenerationConfig,
   VideoGenerationOptions,
@@ -305,6 +306,7 @@ function defaultResolveVideoProviderConfig(providerId: VideoProviderId): VideoGe
     apiKey: resolveVideoApiKey(providerId),
     baseUrl: resolveVideoBaseUrl(providerId),
     model: resolveVideoModel(providerId),
+    fetchImpl: mediaProviderFetch,
   };
 }
 

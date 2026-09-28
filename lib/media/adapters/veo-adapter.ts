@@ -23,10 +23,13 @@
  */
 
 import type {
+  MediaProviderFetch,
   VideoGenerationConfig,
   VideoGenerationOptions,
   VideoGenerationResult,
 } from '../types';
+import { mediaFetchFor } from '../media-fetch';
+import { connectivityHttpFailure, connectivityTransportFailure } from '../probe-auth';
 import { runPolledTask, type TerminalResult } from '../polled-task';
 import { assertNotRedirected } from '../redirect-guard';
 import { requireModel } from '../require-model';
@@ -118,6 +121,7 @@ function resolveCompletedOperation(
 // ---------------------------------------------------------------------------
 
 async function submitVideoGeneration(
+  fetchImpl: MediaProviderFetch,
   baseUrl: string,
   apiKey: string,
   model: string,
@@ -137,7 +141,7 @@ async function submitVideoGeneration(
     body.parameters = parameters;
   }
 
-  const response = await fetch(url, {
+  const response = await fetchImpl(url, {
     method: 'POST',
     redirect: 'manual',
     headers: apiHeaders(apiKey),
@@ -159,6 +163,7 @@ async function submitVideoGeneration(
 // ---------------------------------------------------------------------------
 
 async function pollOperation(
+  fetchImpl: MediaProviderFetch,
   baseUrl: string,
   apiKey: string,
   model: string,
@@ -166,7 +171,7 @@ async function pollOperation(
 ): Promise<VeoOperation> {
   const url = `${baseUrl}/v1beta/models/${model}:fetchPredictOperation`;
 
-  const response = await fetch(url, {
+  const response = await fetchImpl(url, {
     method: 'POST',
     redirect: 'manual',
     headers: apiHeaders(apiKey),
@@ -198,10 +203,12 @@ export async function testVeoConnectivity(
   const baseUrl = config.baseUrl || DEFAULT_BASE_URL;
   const url = `${baseUrl}/v1beta/models`;
 
+  const fetchImpl = mediaFetchFor(config);
+
   // Try ?key= query param first (direct Google API), fall back to x-goog-api-key header (proxy)
   let response: Response | null = null;
   try {
-    response = await fetch(`${url}?key=${config.apiKey}`, {
+    response = await fetchImpl(`${url}?key=${config.apiKey}`, {
       method: 'GET',
       redirect: 'manual',
     });
@@ -209,36 +216,30 @@ export async function testVeoConnectivity(
     // Direct API unreachable, try header auth
   }
   if (!response || !response.ok) {
+    await response?.body?.cancel().catch(() => undefined);
     try {
-      response = await fetch(url, {
+      response = await fetchImpl(url, {
         method: 'GET',
         redirect: 'manual',
         headers: { 'x-goog-api-key': config.apiKey },
       });
-    } catch (_err) {
-      return {
-        success: false,
-        message: `Network error: unable to reach ${baseUrl}. Check your Base URL and network connection.`,
-      };
+    } catch (err) {
+      return connectivityTransportFailure('Veo', err);
     }
   }
+  await response.body?.cancel().catch(() => undefined);
 
   if (response.ok) {
     return { success: true, message: `Connected to Veo (${model})` };
   }
 
-  // Parse error body for user-friendly message
-  const text = await response.text().catch(() => '');
   if (response.status === 400 || response.status === 401 || response.status === 403) {
     return {
       success: false,
       message: `Invalid API key or unauthorized (${response.status}). Check your API Key and Base URL match the same provider.`,
     };
   }
-  return {
-    success: false,
-    message: `Veo connectivity failed (${response.status}): ${text}`,
-  };
+  return connectivityHttpFailure('Veo', response.status);
 }
 
 export async function generateWithVeo(
@@ -250,7 +251,13 @@ export async function generateWithVeo(
 
   return runPolledTask<VideoGenerationResult>({
     submit: async () => {
-      const operation = await submitVideoGeneration(baseUrl, config.apiKey, model, options);
+      const operation = await submitVideoGeneration(
+        mediaFetchFor(config),
+        baseUrl,
+        config.apiKey,
+        model,
+        options,
+      );
       if (!operation.name) {
         throw new Error('Veo returned operation without name');
       }
@@ -259,7 +266,13 @@ export async function generateWithVeo(
         : { status: 'submitted', taskId: operation.name };
     },
     poll: async (operationName) => {
-      const operation = await pollOperation(baseUrl, config.apiKey, model, operationName);
+      const operation = await pollOperation(
+        mediaFetchFor(config),
+        baseUrl,
+        config.apiKey,
+        model,
+        operationName,
+      );
       return operation.done ? resolveCompletedOperation(operation, options) : { status: 'pending' };
     },
     intervalMs: POLL_INTERVAL_MS,

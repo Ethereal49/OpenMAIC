@@ -11,6 +11,7 @@ import { createLogger } from '@/lib/logger';
 import { CLASSROOMS_DIR } from '@/lib/server/classroom-storage';
 import { generateImage } from '@/lib/media/image-providers';
 import { generateVideo, normalizeVideoOptions } from '@/lib/media/video-providers';
+import { mediaProviderFetch } from '@/lib/server/media-provider-fetch';
 import { generateTTS, TTSRateLimitError } from '@/lib/audio/tts-providers';
 import { DEFAULT_TTS_VOICES, DEFAULT_TTS_MODELS, TTS_PROVIDERS } from '@/lib/audio/constants';
 import { IMAGE_PROVIDERS } from '@/lib/media/image-providers';
@@ -210,7 +211,13 @@ export async function generateMediaForClassroom(
         const model = resolveImageModel(providerId) ?? providerConfig?.models?.[0]?.id;
 
         const result = await generateImage(
-          { providerId, apiKey, baseUrl: resolveImageBaseUrl(providerId), model },
+          {
+            providerId,
+            apiKey,
+            baseUrl: resolveImageBaseUrl(providerId),
+            model,
+            fetchImpl: mediaProviderFetch,
+          },
           resolveImageSize(
             { prompt: req.prompt, aspectRatio: req.aspectRatio || '16:9' },
             { providerId, modelId: model },
@@ -278,7 +285,13 @@ export async function generateMediaForClassroom(
         });
 
         const result = await generateVideo(
-          { providerId, apiKey, baseUrl: resolveVideoBaseUrl(providerId), model },
+          {
+            providerId,
+            apiKey,
+            baseUrl: resolveVideoBaseUrl(providerId),
+            model,
+            fetchImpl: mediaProviderFetch,
+          },
           normalized,
         );
 

@@ -31,6 +31,7 @@ import type { VideoProviderId, VideoGenerationOptions } from '@/lib/media/types'
 import { createLogger } from '@/lib/logger';
 import { apiError, apiSuccess } from '@/lib/server/api-response';
 import { validateUrlForSSRF } from '@/lib/server/ssrf-guard';
+import { withMediaProviderFetch } from '@/lib/server/media-provider-fetch';
 
 const log = createLogger('VideoGeneration API');
 
@@ -102,7 +103,10 @@ export async function POST(request: NextRequest) {
         `aspect=${options.aspectRatio ?? 'auto'}, resolution=${options.resolution ?? 'auto'}`,
     );
 
-    const result = await generateVideo({ providerId, apiKey, baseUrl, model }, options);
+    const result = await generateVideo(
+      withMediaProviderFetch({ providerId, apiKey, baseUrl, model }),
+      options,
+    );
 
     log.info(
       `Video generated: url=${result.url ? 'yes' : 'no'}, ${result.width}x${result.height}, ${result.duration}s`,
@@ -119,12 +123,18 @@ export async function POST(request: NextRequest) {
     return apiSuccess({ result });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    // The provider's error text is logged only; the caller gets a fixed message
+    // so an upstream body never reaches the response.
     // Detect content safety filter rejections (e.g. Seedance SensitiveContent errors)
     if (message.includes('SensitiveContent') || message.includes('sensitive information')) {
       log.warn(`Video blocked by content safety filter: ${message}`);
-      return apiError('CONTENT_SENSITIVE', 400, message);
+      return apiError(
+        'CONTENT_SENSITIVE',
+        400,
+        'The video provider rejected this prompt under its content safety policy',
+      );
     }
     log.error(`Video generation failed: ${message}`, error);
-    return apiError('INTERNAL_ERROR', 500, message);
+    return apiError('INTERNAL_ERROR', 500, 'Video generation failed');
   }
 }

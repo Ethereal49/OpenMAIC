@@ -3,6 +3,7 @@ import type { AssetStore } from '@openmaic/storage';
 import { Type, type Static } from 'typebox';
 
 import { generateImage, IMAGE_PROVIDERS } from '@/lib/media/image-providers';
+import { mediaProviderFetch } from '@/lib/server/media-provider-fetch';
 import type {
   ImageGenerationConfig,
   ImageGenerationOptions,
@@ -210,6 +211,7 @@ export function buildGenerateImageTool(
       apiKey: resolveImageApiKey(providerId),
       baseUrl: resolveImageBaseUrl(providerId),
       model: resolveImageModel(providerId),
+      fetchImpl: mediaProviderFetch,
     }));
   const callProvider = deps.generateConfiguredImage ?? generateImage;
   const persist = deps.persistGeneratedImage ?? defaultPersistGeneratedImage;

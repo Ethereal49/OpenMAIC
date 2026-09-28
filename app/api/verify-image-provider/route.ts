@@ -28,6 +28,7 @@ import type { ImageProviderId } from '@/lib/media/types';
 import { apiError, apiSuccess } from '@/lib/server/api-response';
 import { createLogger } from '@/lib/logger';
 import { validateUrlForSSRF } from '@/lib/server/ssrf-guard';
+import { withMediaProviderFetch } from '@/lib/server/media-provider-fetch';
 
 const log = createLogger('VerifyImageProvider');
 
@@ -80,12 +81,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const result = await testImageConnectivity({
-      providerId,
-      apiKey,
-      baseUrl,
-      model,
-    });
+    // Every probe request runs on the pinned provider transport; the adapters'
+    // result messages are fixed text (no provider body, no transport detail).
+    const result = await testImageConnectivity(
+      withMediaProviderFetch({ providerId, apiKey, baseUrl, model }),
+    );
 
     if (!result.success) {
       return apiError('UPSTREAM_ERROR', 500, result.message);
@@ -94,6 +94,6 @@ export async function POST(request: NextRequest) {
     return apiSuccess({ message: result.message });
   } catch (err) {
     log.error(`Image provider verification failed: ${err}`, err);
-    return apiError('INTERNAL_ERROR', 500, `Connectivity test error: ${err}`);
+    return apiError('INTERNAL_ERROR', 500, 'Connectivity test error');
   }
 }
