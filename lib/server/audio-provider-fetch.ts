@@ -269,6 +269,38 @@ export function createAudioProviderFetch(
   return (input, init) => audioProviderFetch(input, init, policy);
 }
 
+/**
+ * Who chose an audio provider endpoint, as the route resolved it server-side
+ * (never from request input).
+ */
+export interface AudioEndpointTarget {
+  /** A client-supplied BYOK base URL: held to the strict public policy. */
+  publicOnly?: boolean;
+  /**
+   * A server-configured provider: its base URL is operator configuration and
+   * may be on a local network without ALLOW_LOCAL_NETWORKS.
+   */
+  managed?: boolean;
+}
+
+/**
+ * Address policy for a request to an audio provider's own endpoint. A client
+ * BYOK endpoint gets the strict public policy; a server-configured one may be
+ * local, while redirect hops it answers with stay on the operator policy;
+ * anything else (an unmanaged provider's catalog default) gets the operator
+ * policy. Cloud metadata and reserved ranges are refused under all three.
+ * Provider-returned result URLs do not use this.
+ */
+export function audioEndpointPolicy(
+  target: AudioEndpointTarget | undefined,
+): AudioProviderFetchPolicy {
+  if (target?.publicOnly) return { allowLocalNetworks: false };
+  if (target?.managed) {
+    return { allowLocalNetworks: true, redirectAllowLocalNetworks: resolveAllowLocalNetworks() };
+  }
+  return { allowLocalNetworks: undefined };
+}
+
 /** Tear down the pooled pinned dispatchers between tests. */
 export function destroyAudioProviderDispatchersForTests(): void {
   for (const dispatcher of dispatchers.values()) {

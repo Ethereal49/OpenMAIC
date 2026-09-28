@@ -20,6 +20,7 @@ import {
   getServerImageProviders,
   getServerVideoProviders,
   getServerTTSProviders,
+  isServerConfiguredProvider,
   resolveImageApiKey,
   resolveImageBaseUrl,
   resolveImageModel,
@@ -493,6 +494,7 @@ export async function generateTTSForClassroom(
     );
   }
   const ttsBaseUrl = resolveTTSBaseUrl(providerId) || ttsProvider?.defaultBaseUrl;
+  const ttsManaged = isServerConfiguredProvider('tts', providerId);
   const voice = DEFAULT_TTS_VOICES[providerId as keyof typeof DEFAULT_TTS_VOICES] || 'default';
   const format = ttsProvider?.supportedFormats?.[0] || 'mp3';
   if (providerId === VOXCPM_TTS_PROVIDER_ID && voice === VOXCPM_AUTO_VOICE_ID) {
@@ -559,6 +561,7 @@ export async function generateTTSForClassroom(
               modelId: DEFAULT_TTS_MODELS[providerId as keyof typeof DEFAULT_TTS_MODELS] || '',
               apiKey,
               baseUrl: ttsBaseUrl,
+              managed: ttsManaged,
               voice,
               speed: speechAction.speed,
               signal,
