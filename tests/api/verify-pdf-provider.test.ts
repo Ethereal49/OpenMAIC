@@ -403,4 +403,29 @@ describe('POST /api/verify-pdf-provider', () => {
       expect(res).toEqual(CONNECTION_FAILED);
     },
   );
+
+  it.each([
+    ['mineru-cloud', '?'],
+    ['mineru', '#'],
+    ['mineru', '?x=1'],
+  ])('refuses a client %s base URL ending in %s before any request', async (providerId, tail) => {
+    process.env.ALLOW_LOCAL_NETWORKS = 'true';
+    const internal = await startLoopback();
+
+    const res = await postVerifyPdfProvider({
+      providerId,
+      apiKey: 'client-key',
+      baseUrl: `${internal.origin}/internal${tail}`,
+    });
+
+    expect(res).toEqual({
+      status: 403,
+      json: {
+        success: false,
+        errorCode: 'INVALID_URL',
+        error: 'Base URL must not contain a query string or fragment',
+      },
+    });
+    expect(internal.requests()).toBe(0);
+  });
 });

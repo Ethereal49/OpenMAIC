@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { createLogger } from '@/lib/logger';
-import { validateUrlForSSRF } from '@/lib/server/ssrf-guard';
+import { validateClientBaseUrl } from '@/lib/server/ssrf-guard';
 import { apiError, apiSuccess } from '@/lib/server/api-response';
 import { providerFetch, type ProviderFetchPolicy } from '@/lib/server/provider-fetch';
 const log = createLogger('Azure Voices');
@@ -38,7 +38,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Validate baseUrl against SSRF
-    const ssrfError = await validateUrlForSSRF(baseUrl);
+    const ssrfError = await validateClientBaseUrl(baseUrl);
     if (ssrfError) {
       return apiError('INVALID_URL', 403, ssrfError);
     }

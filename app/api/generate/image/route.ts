@@ -29,7 +29,7 @@ import {
 import type { ImageProviderId, ImageGenerationOptions } from '@/lib/media/types';
 import { createLogger } from '@/lib/logger';
 import { apiError, apiSuccess } from '@/lib/server/api-response';
-import { validateUrlForSSRF } from '@/lib/server/ssrf-guard';
+import { validateClientBaseUrl } from '@/lib/server/ssrf-guard';
 import { withMediaProviderFetch } from '@/lib/server/media-provider-fetch';
 import { resolveImageSize } from '@/lib/server/image-sizing';
 
@@ -69,7 +69,7 @@ export async function POST(request: NextRequest) {
     const clientModel = request.headers.get('x-image-model')?.trim() || undefined;
 
     if (clientBaseUrl) {
-      const ssrfError = await validateUrlForSSRF(clientBaseUrl);
+      const ssrfError = await validateClientBaseUrl(clientBaseUrl);
       if (ssrfError) {
         return apiError('INVALID_URL', 403, ssrfError);
       }

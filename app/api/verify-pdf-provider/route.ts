@@ -12,7 +12,7 @@ import {
   providerFetch,
   type ProviderFetchPolicy,
 } from '@/lib/server/provider-fetch';
-import { validateUrlForSSRF } from '@/lib/server/ssrf-guard';
+import { validateClientBaseUrl } from '@/lib/server/ssrf-guard';
 import {
   ALIDOCMIND_ENDPOINT_NOT_ALLOWED_MESSAGE,
   resolveSafeClientAliDocMindEndpoint,
@@ -22,7 +22,7 @@ import { MINERU_CLOUD_DEFAULT_BASE } from '@/lib/pdf/constants';
 const log = createLogger('Verify PDF Provider');
 
 // Probes of a caller-supplied base URL run under the operator address policy
-// (the same one `validateUrlForSSRF` applied above: `allowLocalNetworks` unset
+// (the same one `validateClientBaseUrl` applied above: `allowLocalNetworks` unset
 // falls back to ALLOW_LOCAL_NETWORKS), so a self-hosted provider on a local
 // network still verifies when the operator opted in. A server-managed base URL
 // is operator configuration and may reach a local network without the opt-in.
@@ -108,7 +108,7 @@ export async function POST(req: NextRequest) {
     if (providerId === 'mineru-cloud') {
       const clientCloudBase = managed ? undefined : (baseUrl as string | undefined) || undefined;
       if (clientCloudBase) {
-        const ssrfError = await validateUrlForSSRF(clientCloudBase);
+        const ssrfError = await validateClientBaseUrl(clientCloudBase);
         if (ssrfError) {
           return apiError('INVALID_URL', 403, ssrfError);
         }
@@ -151,7 +151,7 @@ export async function POST(req: NextRequest) {
     // Self-hosted providers: verify by connecting to the base URL
     const clientBaseUrl = managed ? undefined : (baseUrl as string | undefined) || undefined;
     if (clientBaseUrl) {
-      const ssrfError = await validateUrlForSSRF(clientBaseUrl);
+      const ssrfError = await validateClientBaseUrl(clientBaseUrl);
       if (ssrfError) {
         return apiError('INVALID_URL', 403, ssrfError);
       }

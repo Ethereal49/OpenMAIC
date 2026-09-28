@@ -27,7 +27,7 @@ import {
 import type { VideoProviderId } from '@/lib/media/types';
 import { apiError, apiSuccess } from '@/lib/server/api-response';
 import { createLogger } from '@/lib/logger';
-import { validateUrlForSSRF } from '@/lib/server/ssrf-guard';
+import { validateClientBaseUrl } from '@/lib/server/ssrf-guard';
 import { withMediaProviderFetch } from '@/lib/server/media-provider-fetch';
 
 const log = createLogger('VerifyVideoProvider');
@@ -51,7 +51,7 @@ export async function POST(request: NextRequest) {
     const clientBaseUrl = managed ? undefined : request.headers.get('x-base-url') || undefined;
 
     if (clientBaseUrl) {
-      const ssrfError = await validateUrlForSSRF(clientBaseUrl);
+      const ssrfError = await validateClientBaseUrl(clientBaseUrl);
       if (ssrfError) {
         return apiError('INVALID_URL', 403, ssrfError);
       }

@@ -12,7 +12,7 @@ import {
   ALIDOCMIND_ENDPOINT_NOT_ALLOWED_MESSAGE,
   resolveSafeClientAliDocMindEndpoint,
 } from '@/lib/server/alidocmind-endpoint';
-import { validateUrlForSSRF } from '@/lib/server/ssrf-guard';
+import { validateClientBaseUrl } from '@/lib/server/ssrf-guard';
 
 export type ClientEndpointCheck = { ok: true; baseUrl: string } | { ok: false; message: string };
 
@@ -33,7 +33,7 @@ export async function checkClientDocumentExtractorBaseUrl(
 ): Promise<ClientEndpointCheck> {
   const officialOnly = OFFICIAL_ENDPOINT_ONLY[providerId];
   if (officialOnly) return officialOnly(clientBaseUrl);
-  const ssrfError = await validateUrlForSSRF(clientBaseUrl);
+  const ssrfError = await validateClientBaseUrl(clientBaseUrl);
   return ssrfError ? { ok: false, message: ssrfError } : { ok: true, baseUrl: clientBaseUrl };
 }
 

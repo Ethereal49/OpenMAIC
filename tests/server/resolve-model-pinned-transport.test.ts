@@ -320,6 +320,14 @@ describe('resolveModel with a client-supplied base URL', () => {
       'internal-secret',
     );
   });
+
+  it.each(['?', '#', '?x=/'])('refuses a client base URL ending in %s', async (tail) => {
+    process.env.ALLOW_LOCAL_NETWORKS = 'true';
+
+    await expect(resolveClientModel(`http://127.0.0.1:9/internal${tail}`)).rejects.toThrow(
+      'Base URL must not contain a query string or fragment',
+    );
+  });
 });
 
 describe('toCallerSafeTransportError', () => {

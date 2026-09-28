@@ -172,13 +172,15 @@ async function readMinerUJson<T>(res: Response, context: string): Promise<T> {
     );
     throw new Error(`MinerU Cloud ${context}: invalid JSON response (HTTP ${res.status})`);
   }
+  // The envelope's `msg` is the endpoint's own text: log it, never relay it.
   if (!res.ok) {
-    throw new Error(
-      `MinerU Cloud ${context}: HTTP ${res.status}${json.msg ? ` — ${json.msg}` : ''}`,
-    );
+    log.warn(`[MinerU Cloud] ${context}: HTTP ${res.status}: ${String(json?.msg).slice(0, 500)}`);
+    throw new Error(`MinerU Cloud ${context}: HTTP ${res.status}`);
   }
-  if (json.code !== 0) {
-    throw new Error(`MinerU Cloud ${context}: ${json.msg || 'unknown error'} (code ${json.code})`);
+  if (json?.code !== 0) {
+    log.warn(`[MinerU Cloud] ${context}: code ${json?.code}: ${String(json?.msg).slice(0, 500)}`);
+    const code = Number.isInteger(json?.code) ? ` (code ${json.code})` : '';
+    throw new Error(`MinerU Cloud ${context}: request rejected${code}`);
   }
   return json.data;
 }
@@ -582,7 +584,8 @@ export async function parseWithMinerUCloud(
     }
 
     if (row.state === 'failed') {
-      throw new Error(`MinerU Cloud parsing failed: ${row.err_msg || 'unknown error'}`);
+      log.warn(`[MinerU Cloud] Batch ${batchData.batch_id} failed: ${row.err_msg ?? ''}`);
+      throw new Error('MinerU Cloud parsing failed');
     }
 
     if (row.state === 'done' && row.full_zip_url) {
@@ -592,7 +595,6 @@ export async function parseWithMinerUCloud(
     await sleep(POLL_INTERVAL_MS);
   }
 
-  throw new Error(
-    `MinerU Cloud timed out after ${POLL_MAX_MS / 1000}s (batch: ${batchData.batch_id})`,
-  );
+  log.warn(`[MinerU Cloud] Batch ${batchData.batch_id} timed out`);
+  throw new Error(`MinerU Cloud timed out after ${POLL_MAX_MS / 1000}s`);
 }

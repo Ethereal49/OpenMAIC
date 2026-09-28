@@ -402,4 +402,20 @@ describe('media provider routes on the strict transport', () => {
       expect(trap.requests()).toBe(0);
     },
   );
+
+  it('refuses a client base URL with a query string before any request', async () => {
+    process.env.ALLOW_LOCAL_NETWORKS = 'true';
+    const target = await answering(200, '{}');
+
+    const res = await call(
+      generateImagePOST,
+      '/api/generate/image',
+      imageHeaders(`${target.origin}/internal?`),
+      { prompt: 'a cat' },
+    );
+
+    expect(res.status).toBe(403);
+    expect(res.json.error).toBe('Base URL must not contain a query string or fragment');
+    expect(target.requests()).toBe(0);
+  });
 });

@@ -14,7 +14,7 @@ import {
   resolveBaseUrl,
   resolveProxy,
 } from '@/lib/server/provider-config';
-import { validateUrlForSSRF } from '@/lib/server/ssrf-guard';
+import { validateClientBaseUrl, validateUrlForSSRF } from '@/lib/server/ssrf-guard';
 import { fetchWithRedirectValidation } from '@/lib/server/fetch-with-redirect-validation';
 import { clientBaseUrlLlmFetch } from '@/lib/server/llm-provider-fetch';
 import {
@@ -148,7 +148,9 @@ export async function resolveModel(params: {
   const clientEndpoint = !managed && (Boolean(clientBaseUrl) || !operatorSelected);
   const endpointUrl = clientBaseUrl ?? getProvider(providerId)?.defaultBaseUrl;
   if (clientEndpoint && endpointUrl) {
-    const ssrfError = await validateUrlForSSRF(endpointUrl);
+    const ssrfError = clientBaseUrl
+      ? await validateClientBaseUrl(clientBaseUrl)
+      : await validateUrlForSSRF(endpointUrl);
     if (ssrfError) {
       throw new Error(ssrfError);
     }

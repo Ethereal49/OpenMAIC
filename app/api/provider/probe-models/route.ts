@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { createLogger } from '@/lib/logger';
 import { apiError, apiSuccess } from '@/lib/server/api-response';
-import { validateUrlForSSRF } from '@/lib/server/ssrf-guard';
+import { validateClientBaseUrl, validateUrlForSSRF } from '@/lib/server/ssrf-guard';
 import { fetchModels, ModelFetchError } from '@/lib/server/model-fetch';
 
 const log = createLogger('ProbeModels');
@@ -32,9 +32,12 @@ export async function POST(req: NextRequest) {
       return apiError('MISSING_REQUIRED_FIELD', 400, 'baseUrl is required');
     }
 
-    // SSRF guard on both the base URL and an explicit models URL override.
-    for (const url of [baseUrl, modelsUrl].filter(Boolean) as string[]) {
-      const ssrfError = await validateUrlForSSRF(url);
+    // SSRF guard on both the base URL and an explicit models URL override
+    // (a complete URL, so only the base URL is held to the base-URL shape).
+    const baseUrlError = await validateClientBaseUrl(baseUrl);
+    if (baseUrlError) return apiError('INVALID_REQUEST', 400, baseUrlError);
+    if (modelsUrl) {
+      const ssrfError = await validateUrlForSSRF(modelsUrl);
       if (ssrfError) return apiError('INVALID_REQUEST', 400, ssrfError);
     }
 

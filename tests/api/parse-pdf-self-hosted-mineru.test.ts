@@ -243,4 +243,22 @@ describe('POST /api/parse-pdf with self-hosted MinerU', () => {
     expect(res.json.errorCode).toBe('INVALID_URL');
     expect(mineru.requests()).toBe(0);
   });
+
+  it.each(['mineru', 'mineru-cloud'])(
+    'refuses a client %s base URL with a query or fragment before any request',
+    async (providerId) => {
+      process.env.ALLOW_LOCAL_NETWORKS = 'true';
+      const internal = await startLoopback();
+
+      const res = await postParsePdf({
+        providerId,
+        apiKey: 'client-key',
+        baseUrl: `${internal.origin}/internal#`,
+      });
+
+      expect(res.status).toBe(403);
+      expect(res.json.error).toBe('Base URL must not contain a query string or fragment');
+      expect(internal.requests()).toBe(0);
+    },
+  );
 });
