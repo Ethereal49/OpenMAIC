@@ -6,13 +6,7 @@
  */
 
 import type { NextRequest } from 'next/server';
-import {
-  getModel,
-  getProvider,
-  LLM_FETCH_TIMEOUT_MS,
-  parseModelString,
-  type ModelWithInfo,
-} from '@/lib/ai/providers';
+import { getModel, getProvider, parseModelString, type ModelWithInfo } from '@/lib/ai/providers';
 import type { ProviderType, ThinkingConfig } from '@/lib/types/provider';
 import {
   isServerConfiguredProvider,
@@ -22,7 +16,7 @@ import {
 } from '@/lib/server/provider-config';
 import { validateUrlForSSRF } from '@/lib/server/ssrf-guard';
 import { fetchWithRedirectValidation } from '@/lib/server/fetch-with-redirect-validation';
-import { providerFetch, type ProviderFetchPolicy } from '@/lib/server/provider-fetch';
+import { clientBaseUrlLlmFetch } from '@/lib/server/llm-provider-fetch';
 import {
   getStageRoute,
   getUserStageRoute,
@@ -30,26 +24,6 @@ import {
   type LlmStage,
   type UserStageRoute,
 } from '@/lib/server/model-routes';
-
-// A client-supplied base URL runs under the operator address policy (the one
-// `validateUrlForSSRF` applied: `allowLocalNetworks` unset falls back to
-// ALLOW_LOCAL_NETWORKS) on the strict transport, which pins the connect address
-// to the vetted DNS answers and refuses a 3xx. The pinned dispatcher carries the
-// same long timeouts as the default LLM dispatcher, so slow thinking models and
-// long streams are not cut off.
-const CLIENT_BASE_URL_LLM_POLICY: ProviderFetchPolicy = {
-  allowLocalNetworks: undefined,
-  rejectRedirects: true,
-  headersTimeout: LLM_FETCH_TIMEOUT_MS,
-  bodyTimeout: LLM_FETCH_TIMEOUT_MS,
-};
-
-/**
- * `fetch` for LLM calls to a client-supplied base URL. Any dispatcher already
- * on the request (the default timeout-only one) is replaced by the pinned one.
- */
-const clientBaseUrlLlmFetch: typeof fetch = (input, init) =>
-  providerFetch(input instanceof Request ? input.url : input, init, CLIENT_BASE_URL_LLM_POLICY);
 
 export interface ResolvedModel extends ModelWithInfo {
   /** Original model string (e.g. "openai/gpt-4o-mini") */
@@ -183,7 +157,7 @@ export async function resolveModel(params: {
     proxy,
     providerType: clientProviderType as ProviderType | undefined,
     // A client-supplied base URL is pinned and refuses redirects (see
-    // CLIENT_BASE_URL_LLM_POLICY). Operator-configured endpoints keep the
+    // lib/server/llm-provider-fetch.ts). Operator-configured endpoints keep the
     // transport that re-validates every redirect hop.
     fetchImpl: clientBaseUrl ? clientBaseUrlLlmFetch : fetchWithRedirectValidation,
   });

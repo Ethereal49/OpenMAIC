@@ -48,7 +48,7 @@ const REJECTED_ENDPOINTS = [
   'http://127.0.0.1:8080',
   'internal.example.test',
   'https://docmind-api.oss-cn-hangzhou.aliyuncs.com',
-  'https://docmind-api.cn-hangzhou.aliyuncs.com.attacker.test',
+  'https://docmind-api.cn-hangzhou.aliyuncs.com.example.test',
   'http://docmind-api.cn-hangzhou.aliyuncs.com',
   'https://docmind-api.cn-hangzhou.aliyuncs.com:8443',
   'https://docmind-api.cn-hangzhou.aliyuncs.com/proxy',

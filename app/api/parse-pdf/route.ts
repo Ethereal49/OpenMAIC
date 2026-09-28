@@ -9,11 +9,7 @@ import type { ParsedPdfContent } from '@/lib/types/pdf';
 import { documentArtifactToParsedPdfContent, extractDocument } from '@/lib/document';
 import { createLogger } from '@/lib/logger';
 import { apiError, apiSuccess } from '@/lib/server/api-response';
-import { validateUrlForSSRF } from '@/lib/server/ssrf-guard';
-import {
-  ALIDOCMIND_ENDPOINT_NOT_ALLOWED_MESSAGE,
-  resolveSafeClientAliDocMindEndpoint,
-} from '@/lib/server/alidocmind-endpoint';
+import { checkClientDocumentExtractorBaseUrl } from '@/lib/server/client-extractor-endpoint';
 const log = createLogger('Parse PDF');
 
 export async function POST(req: NextRequest) {
@@ -48,18 +44,12 @@ export async function POST(req: NextRequest) {
     // Managed providers are admin-owned: ignore any client-sent key/baseUrl.
     const managed = isServerConfiguredProvider('pdf', effectiveProviderId);
     let clientBaseUrl = managed ? undefined : baseUrl || undefined;
-    if (clientBaseUrl && effectiveProviderId === 'alidocmind') {
-      // The DocMind SDK cannot be pinned: only official endpoints are accepted.
-      const safeEndpoint = resolveSafeClientAliDocMindEndpoint(clientBaseUrl);
-      if (!safeEndpoint) {
-        return apiError('INVALID_URL', 403, ALIDOCMIND_ENDPOINT_NOT_ALLOWED_MESSAGE);
+    if (clientBaseUrl) {
+      const checked = await checkClientDocumentExtractorBaseUrl(effectiveProviderId, clientBaseUrl);
+      if (!checked.ok) {
+        return apiError('INVALID_URL', 403, checked.message);
       }
-      clientBaseUrl = safeEndpoint;
-    } else if (clientBaseUrl) {
-      const ssrfError = await validateUrlForSSRF(clientBaseUrl);
-      if (ssrfError) {
-        return apiError('INVALID_URL', 403, ssrfError);
-      }
+      clientBaseUrl = checked.baseUrl;
     }
 
     const config = {
