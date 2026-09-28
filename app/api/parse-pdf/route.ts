@@ -56,6 +56,7 @@ export async function POST(req: NextRequest) {
       providerId: effectiveProviderId,
       apiKey: resolvePDFApiKey(effectiveProviderId, managed ? undefined : apiKey || undefined),
       baseUrl: resolvePDFBaseUrl(effectiveProviderId, clientBaseUrl),
+      managed,
     };
 
     // Convert PDF to buffer

@@ -76,7 +76,7 @@ export async function POST(request: NextRequest) {
     // Every probe request runs on the pinned provider transport; the adapters'
     // result messages are fixed text (no provider body, no transport detail).
     const result = await testVideoConnectivity(
-      withMediaProviderFetch({ providerId, apiKey, baseUrl, model }),
+      withMediaProviderFetch({ providerId, apiKey, baseUrl, model }, managed),
     );
 
     if (!result.success) {

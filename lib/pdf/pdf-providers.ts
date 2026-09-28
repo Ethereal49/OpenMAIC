@@ -189,14 +189,15 @@ export function describeSelfHostedMinerUError(status: number, rawBody: string): 
   return `MinerU API error (${status})`;
 }
 
-// Self-hosted MinerU runs under the operator address policy (the same one the
-// routes validated the base URL against: `allowLocalNetworks` unset falls back
-// to ALLOW_LOCAL_NETWORKS). The strict transport pins the connect address to
-// the vetted DNS answers and refuses a 3xx instead of following it.
-const SELF_HOSTED_MINERU_POLICY: ProviderFetchPolicy = {
-  allowLocalNetworks: undefined,
-  rejectRedirects: true,
-};
+// A caller-supplied self-hosted MinerU URL runs under the operator address
+// policy (the same one the routes validated it against: `allowLocalNetworks`
+// unset falls back to ALLOW_LOCAL_NETWORKS); a server-managed one is operator
+// configuration and may reach a local network without the opt-in. Either way
+// the strict transport pins the connect address to the vetted DNS answers and
+// refuses a 3xx instead of following it.
+function selfHostedMinerUPolicy(managed: boolean | undefined): ProviderFetchPolicy {
+  return { allowLocalNetworks: managed ? true : undefined, rejectRedirects: true };
+}
 
 const SELF_HOSTED_MINERU_CONNECTION_FAILED =
   'Cannot connect to the self-hosted MinerU server, please check the Base URL';
@@ -681,7 +682,7 @@ export async function parseWithMinerUDocument(
     response = await providerFetch(
       `${config.baseUrl}/file_parse`,
       { method: 'POST', headers, body: formData },
-      SELF_HOSTED_MINERU_POLICY,
+      selfHostedMinerUPolicy(config.managed),
     );
   } catch (error) {
     // Refused, unresolvable, policy-blocked and redirecting targets all get

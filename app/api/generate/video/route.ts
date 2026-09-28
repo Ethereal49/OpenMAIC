@@ -104,7 +104,7 @@ export async function POST(request: NextRequest) {
     );
 
     const result = await generateVideo(
-      withMediaProviderFetch({ providerId, apiKey, baseUrl, model }),
+      withMediaProviderFetch({ providerId, apiKey, baseUrl, model }, managed),
       options,
     );
 

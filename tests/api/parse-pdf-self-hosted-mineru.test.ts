@@ -203,7 +203,8 @@ describe('POST /api/parse-pdf with self-hosted MinerU', () => {
   });
 
   it('ignores the client base URL for a server-managed provider', async () => {
-    process.env.ALLOW_LOCAL_NETWORKS = 'true';
+    // No opt-in: a server-managed base URL is operator configuration and may
+    // point at a local network.
     const managed = await startLoopback((_req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(MINERU_OK);
@@ -219,5 +220,27 @@ describe('POST /api/parse-pdf with self-hosted MinerU', () => {
     expect(res.status).toBe(200);
     expect(managed.requests()).toBe(1);
     expect(clientTarget.requests()).toBe(0);
+  });
+
+  it('still refuses cloud metadata as a server-managed base URL', async () => {
+    mocks.isServerConfiguredProvider.mockReturnValue(true);
+    mocks.resolvePDFBaseUrl.mockReturnValue('http://169.254.169.254/latest');
+
+    const res = await postParsePdf({ providerId: 'mineru' });
+
+    expect(res).toEqual(CONNECTION_FAILED);
+  });
+
+  it('refuses a client-supplied loopback base URL without the opt-in', async () => {
+    const mineru = await startLoopback((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(MINERU_OK);
+    });
+
+    const res = await postParsePdf({ providerId: 'mineru', baseUrl: mineru.origin });
+
+    expect(res.status).toBe(403);
+    expect(res.json.errorCode).toBe('INVALID_URL');
+    expect(mineru.requests()).toBe(0);
   });
 });

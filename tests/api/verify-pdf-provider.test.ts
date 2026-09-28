@@ -361,7 +361,8 @@ describe('POST /api/verify-pdf-provider', () => {
   it.each(['mineru-cloud', 'mineru'])(
     'ignores the client key and base URL for a server-managed %s provider',
     async (providerId) => {
-      process.env.ALLOW_LOCAL_NETWORKS = 'true';
+      // No opt-in: a server-managed base URL is operator configuration and may
+      // point at a local network.
       const managed = await startLoopback();
       const clientTarget = await startLoopback();
       mocks.isServerConfiguredProvider.mockReturnValue(true);
@@ -387,6 +388,19 @@ describe('POST /api/verify-pdf-provider', () => {
       expect(managed.requests()).toBe(1);
       expect(managed.lastHeaders()!.authorization).toBe('Bearer server-key');
       expect(clientTarget.requests()).toBe(0);
+    },
+  );
+
+  it.each(['mineru-cloud', 'mineru'])(
+    'still refuses cloud metadata as a server-managed %s base URL',
+    async (providerId) => {
+      mocks.isServerConfiguredProvider.mockReturnValue(true);
+      mocks.resolvePDFBaseUrl.mockReturnValue('http://169.254.169.254/latest');
+      mocks.resolvePDFApiKey.mockReturnValue('server-key');
+
+      const res = await postVerifyPdfProvider({ providerId });
+
+      expect(res).toEqual(CONNECTION_FAILED);
     },
   );
 });

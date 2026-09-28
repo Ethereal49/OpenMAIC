@@ -416,6 +416,7 @@ async function runExtraction(
     // Env fallback is a last resort for a managed provider (defensive; the
     // resolver already covers env+YAML).
     allowEnvFallback: managed,
+    managed,
   };
 
   const artifact = await provider.extract({

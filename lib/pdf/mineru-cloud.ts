@@ -463,13 +463,13 @@ export async function parseWithMinerUCloud(
   const apiRoot = (config.baseUrl || MINERU_CLOUD_DEFAULT_BASE).replace(/\/+$/, '');
   const uploadFileName = sanitizeFileName(sourceFileName);
 
-  // The API root is a configured provider endpoint — a server-managed/default
-  // endpoint or a self-hosted URL the operator opted into with
-  // ALLOW_LOCAL_NETWORKS. It always runs under the operator policy (the
-  // transport falls back to the env opt-in when `allowLocalNetworks` is
-  // undefined); only the response-supplied upload and ZIP URLs are held to the
-  // strict public policy.
-  const firstHopPolicy = { allowLocalNetworks: undefined };
+  // The API root is a configured provider endpoint. A caller-supplied or
+  // default root runs under the operator policy (the transport falls back to
+  // the env opt-in when `allowLocalNetworks` is undefined); a server-managed
+  // root is operator configuration and may reach a local network without it.
+  // Only the response-supplied upload and ZIP URLs are held to the strict
+  // public policy.
+  const firstHopPolicy = { allowLocalNetworks: config.managed ? true : undefined };
 
   log.info(`[MinerU Cloud] Starting parse: ${uploadFileName} (${documentBuffer.byteLength} bytes)`);
 

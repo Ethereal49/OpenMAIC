@@ -313,25 +313,71 @@ describe('media provider routes on the strict transport', () => {
       });
       expect(provider.lastUrl()).toBe('/api/v3/contents/generations/tasks');
     });
+  });
 
-    it('ignores the client base URL for a server-managed image provider', async () => {
-      const managed = await answering(200, '{}');
-      const clientTarget = await answering(200, '{}');
-      mocks.isServerConfiguredProvider.mockReturnValue(true);
-      mocks.managedBaseUrl.value = managed.origin;
+  it('ignores the client base URL for a server-managed image provider', async () => {
+    // No opt-in: a server-managed base URL is operator configuration and may
+    // point at a local network.
+    const managed = await answering(200, '{}');
+    const clientTarget = await answering(200, '{}');
+    mocks.isServerConfiguredProvider.mockReturnValue(true);
+    mocks.managedBaseUrl.value = managed.origin;
 
-      const res = await call(
-        verifyImagePOST,
-        '/api/verify-image-provider',
-        imageHeaders(clientTarget.origin),
-      );
+    const res = await call(
+      verifyImagePOST,
+      '/api/verify-image-provider',
+      imageHeaders(clientTarget.origin),
+    );
 
-      expect(res.status).toBe(200);
-      expect(managed.requests()).toBe(1);
-      expect(managed.lastHeaders()!.authorization).toBe('Bearer server-key');
-      expect(clientTarget.requests()).toBe(0);
+    expect(res.status).toBe(200);
+    expect(managed.requests()).toBe(1);
+    expect(managed.lastHeaders()!.authorization).toBe('Bearer server-key');
+    expect(clientTarget.requests()).toBe(0);
+  });
+
+  it('generates through a server-managed local provider without the opt-in', async () => {
+    const managed = await answering(200, '{"data":[{"url":"https://cdn.example/x.png"}]}');
+    mocks.isServerConfiguredProvider.mockReturnValue(true);
+    mocks.managedBaseUrl.value = managed.origin;
+
+    const res = await call(generateImagePOST, '/api/generate/image', imageHeaders(''), {
+      prompt: 'a cat',
+    });
+
+    expect(res.status).toBe(200);
+    expect(managed.requests()).toBe(1);
+  });
+
+  it('still refuses cloud metadata as a server-managed base URL', async () => {
+    mocks.isServerConfiguredProvider.mockReturnValue(true);
+    mocks.managedBaseUrl.value = 'http://169.254.169.254/v1';
+
+    const res = await call(generateImagePOST, '/api/generate/image', imageHeaders(''), {
+      prompt: 'a cat',
+    });
+
+    expect(res.json).toEqual({
+      success: false,
+      errorCode: 'INTERNAL_ERROR',
+      error: 'Image generation failed',
     });
   });
+
+  it.each([
+    ['generate image', generateImagePOST, '/api/generate/image', imageHeaders],
+    ['verify video', verifyVideoPOST, '/api/verify-video-provider', videoHeaders],
+  ] as const)(
+    '%s refuses a client-supplied loopback base URL without the opt-in',
+    async (_name, handler, path, headers) => {
+      const target = await answering(200, '{"data":[{"url":"https://cdn.example/x.png"}]}');
+
+      const res = await call(handler, path, headers(target.origin), { prompt: 'a cat' });
+
+      expect(res.status).toBe(403);
+      expect(res.json.errorCode).toBe('INVALID_URL');
+      expect(target.requests()).toBe(0);
+    },
+  );
 
   it.each([
     ['generate image', generateImagePOST, '/api/generate/image', imageHeaders],

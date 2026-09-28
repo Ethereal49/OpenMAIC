@@ -110,7 +110,7 @@ export async function POST(request: NextRequest) {
     );
 
     const result = await generateImage(
-      withMediaProviderFetch({ providerId, apiKey, baseUrl, model }),
+      withMediaProviderFetch({ providerId, apiKey, baseUrl, model }, managed),
       sizedOptions,
     );
 

@@ -21,13 +21,17 @@ import { MINERU_CLOUD_DEFAULT_BASE } from '@/lib/pdf/constants';
 
 const log = createLogger('Verify PDF Provider');
 
-// Probes run under the operator address policy (the same one
-// `validateUrlForSSRF` applied above: `allowLocalNetworks` unset falls back to
-// ALLOW_LOCAL_NETWORKS), so a self-hosted provider on a local network still
-// verifies when the operator opted in. The strict transport pins the connect
-// address to the vetted DNS answers, closing the gap between validation and
-// connect, and a 3xx is refused rather than followed.
-const PROBE_POLICY: ProviderFetchPolicy = { allowLocalNetworks: undefined, rejectRedirects: true };
+// Probes of a caller-supplied base URL run under the operator address policy
+// (the same one `validateUrlForSSRF` applied above: `allowLocalNetworks` unset
+// falls back to ALLOW_LOCAL_NETWORKS), so a self-hosted provider on a local
+// network still verifies when the operator opted in. A server-managed base URL
+// is operator configuration and may reach a local network without the opt-in.
+// The strict transport pins the connect address to the vetted DNS answers,
+// closing the gap between validation and connect, and a 3xx is refused rather
+// than followed.
+function probePolicy(managed: boolean): ProviderFetchPolicy {
+  return { allowLocalNetworks: managed ? true : undefined, rejectRedirects: true };
+}
 
 // Fixed messages: the probe target's body, status text and transport errors
 // are logged server-side only and never echoed back to the caller.
@@ -129,7 +133,7 @@ export async function POST(req: NextRequest) {
           },
           signal: AbortSignal.timeout(10000),
         },
-        PROBE_POLICY,
+        probePolicy(managed),
       );
       // Only the status matters; release the connection without reading the body.
       await response.body?.cancel().catch(() => undefined);
@@ -168,7 +172,7 @@ export async function POST(req: NextRequest) {
     const response = await providerFetch(
       resolvedBaseUrl,
       { headers, signal: AbortSignal.timeout(10000) },
-      PROBE_POLICY,
+      probePolicy(managed),
     );
     await response.body?.cancel().catch(() => undefined);
 
