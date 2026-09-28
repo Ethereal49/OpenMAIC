@@ -48,9 +48,12 @@ import {
   type RequestInit as UndiciRequestInit,
 } from 'undici';
 
+import { isIP } from 'node:net';
+
 import { createValidatedDispatcher } from '@/lib/server/pinned-dispatcher';
 import {
   allowLocalNetworksEnabled,
+  assertSafeConnectionAddress,
   findUnsafeNetworkTargetError,
   type SsrfValidationPolicy,
 } from '@/lib/server/ssrf-guard';
@@ -176,11 +179,29 @@ function normalizeProviderBodyForUndici(init: RequestInit | undefined): RequestI
 }
 
 /**
+ * Refuse an IP-literal request host the policy does not allow. Node never runs
+ * `connect.lookup` for an IP literal, so the pinned dispatcher alone cannot
+ * judge it; a hostname is judged by the pinned lookup at connect time.
+ */
+function assertIpLiteralHostAllowed(input: string | URL, allowLocalNetworks: boolean): void {
+  let hostname: string;
+  try {
+    hostname = new URL(input).hostname;
+  } catch {
+    return; // not a URL: the transport rejects it itself
+  }
+  const bare =
+    hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
+  if (isIP(bare)) assertSafeConnectionAddress(bare, allowLocalNetworks);
+}
+
+/**
  * Issue one provider request: a pinned dispatcher plus redirect handling under
  * the given policy. By default redirects are followed only after each hop is
  * re-validated; with `rejectRedirects` a 3xx is a hard failure instead. The
- * origin is validated by the caller (the route or the download helper, under
- * the same policy); this helper owns redirect handling and connect-time pinning.
+ * request origin is held to the same policy here (IP-literal hosts before the
+ * request, hostnames by the pinned lookup), so the transport enforces it even
+ * when a caller did not validate the URL first.
  */
 export async function audioProviderFetch(
   input: string | URL,
@@ -188,6 +209,7 @@ export async function audioProviderFetch(
   policy: AudioProviderFetchPolicy = {},
 ): Promise<Response> {
   const allowLocalNetworks = resolveAllowLocalNetworks(policy.allowLocalNetworks);
+  assertIpLiteralHostAllowed(input, allowLocalNetworks);
   const dispatcher = dispatcherFor(allowLocalNetworks, policy);
   // Normalize the body once, before either transport path can serialize it:
   // both the direct `redirect: 'error'` request and the per-hop loop hand the

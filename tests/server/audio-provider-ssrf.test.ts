@@ -296,6 +296,12 @@ describe('audio provider adapters — SSRF hardening', () => {
   });
 
   describe('a 302 to cloud metadata is never followed', () => {
+    // The loopback origins need the operator opt-in; metadata stays refused
+    // under every policy.
+    beforeEach(() => {
+      process.env.ALLOW_LOCAL_NETWORKS = 'true';
+    });
+
     it.each(TTS_CASES)('$name', async ({ config }) => {
       const origin = await startLoopback(redirectTo('http://169.254.169.254/latest/meta-data/'));
 
@@ -344,6 +350,10 @@ describe('audio provider adapters — SSRF hardening', () => {
   });
 
   describe('a normal 200 response is returned', () => {
+    beforeEach(() => {
+      process.env.ALLOW_LOCAL_NETWORKS = 'true';
+    });
+
     it('OpenAI-compatible TTS returns the audio bytes', async () => {
       const origin = await startLoopback((_req, res) => {
         res.writeHead(200, { 'Content-Type': 'audio/wav' });
