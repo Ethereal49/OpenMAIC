@@ -83,6 +83,15 @@ export type AudioProviderFetchPolicy = Partial<SsrfValidationPolicy> & {
    */
   requireHttps?: boolean;
   /**
+   * Address policy for followed redirect hops when it differs from the
+   * origin's. Unset holds hops to the origin policy. A server-managed origin
+   * allowed on a local network sets this to the operator policy
+   * (`ALLOW_LOCAL_NETWORKS`), so the endpoint the operator configured may be
+   * local while a hop it answers with is judged like any other target. Each
+   * hop is validated and pinned under this policy.
+   */
+  redirectAllowLocalNetworks?: boolean;
+  /**
    * Undici timeouts for the pinned dispatcher. Unset keeps undici's defaults;
    * LLM calls raise both so a slow thinking model is not cut off.
    */
@@ -227,10 +236,17 @@ export async function audioProviderFetch(
         dispatcher,
       } as RequestInit);
     }
+    const hopAllowLocalNetworks = policy.redirectAllowLocalNetworks ?? allowLocalNetworks;
     return await fetchWithRedirectValidation(input, normalizedInit, {
       fetchImpl: undiciTransport,
       dispatcher,
       allowLocalNetworks,
+      ...(hopAllowLocalNetworks !== allowLocalNetworks
+        ? {
+            redirectAllowLocalNetworks: hopAllowLocalNetworks,
+            redirectDispatcher: dispatcherFor(hopAllowLocalNetworks, policy),
+          }
+        : {}),
       ...(policy.requireHttps ? { requireHttps: true } : {}),
     });
   } catch (error) {

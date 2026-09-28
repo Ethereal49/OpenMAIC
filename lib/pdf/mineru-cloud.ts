@@ -16,7 +16,12 @@ import {
   MINERU_IMAGE_MIMES,
 } from '@/lib/document/mime';
 import { createLogger } from '@/lib/logger';
-import { isRejectedRedirectError, providerFetch } from '@/lib/server/provider-fetch';
+import {
+  isRejectedRedirectError,
+  providerFetch,
+  resolveAllowLocalNetworks,
+  type ProviderFetchPolicy,
+} from '@/lib/server/provider-fetch';
 import {
   findUnsafeNetworkTargetError,
   UnsafeNetworkTargetError,
@@ -469,9 +474,13 @@ export async function parseWithMinerUCloud(
   // default root runs under the operator policy (the transport falls back to
   // the env opt-in when `allowLocalNetworks` is undefined); a server-managed
   // root is operator configuration and may reach a local network without it.
-  // Only the response-supplied upload and ZIP URLs are held to the strict
-  // public policy.
-  const firstHopPolicy = { allowLocalNetworks: config.managed ? true : undefined };
+  // Redirects from the root are followed, but every hop is validated and
+  // pinned under the operator policy even when the root is managed: the
+  // operator chose the root, not where it redirects. Only the
+  // response-supplied upload and ZIP URLs are held to the strict public policy.
+  const firstHopPolicy: ProviderFetchPolicy = config.managed
+    ? { allowLocalNetworks: true, redirectAllowLocalNetworks: resolveAllowLocalNetworks() }
+    : { allowLocalNetworks: undefined };
 
   log.info(`[MinerU Cloud] Starting parse: ${uploadFileName} (${documentBuffer.byteLength} bytes)`);
 
