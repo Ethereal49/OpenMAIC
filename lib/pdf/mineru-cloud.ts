@@ -16,7 +16,7 @@ import {
   MINERU_IMAGE_MIMES,
 } from '@/lib/document/mime';
 import { createLogger } from '@/lib/logger';
-import { providerFetch } from '@/lib/server/provider-fetch';
+import { isRejectedRedirectError, providerFetch } from '@/lib/server/provider-fetch';
 import {
   findUnsafeNetworkTargetError,
   UnsafeNetworkTargetError,
@@ -84,25 +84,12 @@ function isRetryable(err: unknown): boolean {
   // the request was configured to reject that, so a retry re-issues the same
   // rejected request. Undici reports it as `TypeError: fetch failed` with an
   // `Error('unexpected redirect')` cause, which must not look retryable.
-  if (isRedirectRefusal(err)) return false;
+  if (isRejectedRedirectError(err)) return false;
   if (!(err instanceof Error)) return false;
   const msg = err.message.toLowerCase();
   return ['fetch failed', 'econnreset', 'etimedout', 'timeout', 'aborted'].some((s) =>
     msg.includes(s),
   );
-}
-
-/** Follow the `cause` chain looking for undici's rejected-redirect error. */
-function isRedirectRefusal(err: unknown): boolean {
-  const seen = new Set<unknown>();
-  let current: unknown = err;
-  while (current && typeof current === 'object' && !seen.has(current)) {
-    seen.add(current);
-    const message = (current as { message?: unknown }).message;
-    if (typeof message === 'string' && /unexpected redirect/i.test(message)) return true;
-    current = (current as { cause?: unknown }).cause;
-  }
-  return false;
 }
 
 async function fetchWithRetry<T>(fn: () => Promise<T>, context: string, attempts = 4): Promise<T> {

@@ -7,7 +7,11 @@ import {
   resolvePDFApiKey,
   resolvePDFBaseUrl,
 } from '@/lib/server/provider-config';
-import { providerFetch, type ProviderFetchPolicy } from '@/lib/server/provider-fetch';
+import {
+  isRejectedRedirectError,
+  providerFetch,
+  type ProviderFetchPolicy,
+} from '@/lib/server/provider-fetch';
 import { validateUrlForSSRF } from '@/lib/server/ssrf-guard';
 import { MINERU_CLOUD_DEFAULT_BASE } from '@/lib/pdf/constants';
 
@@ -25,19 +29,6 @@ const PROBE_POLICY: ProviderFetchPolicy = { allowLocalNetworks: undefined, rejec
 // are logged server-side only and never echoed back to the caller.
 const AUTH_FAILED_MESSAGE = 'Authentication failed, please check the API Key';
 const CONNECTION_FAILED_MESSAGE = 'Cannot connect to server, please check the Base URL';
-
-/** Follow the `cause` chain looking for undici's rejected-redirect error. */
-function isRedirectRefusal(err: unknown): boolean {
-  const seen = new Set<unknown>();
-  let current: unknown = err;
-  while (current && typeof current === 'object' && !seen.has(current)) {
-    seen.add(current);
-    const message = (current as { message?: unknown }).message;
-    if (typeof message === 'string' && /unexpected redirect/i.test(message)) return true;
-    current = (current as { cause?: unknown }).cause;
-  }
-  return false;
-}
 
 export async function POST(req: NextRequest) {
   let providerId: string | undefined;
@@ -182,7 +173,7 @@ export async function POST(req: NextRequest) {
   } catch (error) {
     log.error(`PDF provider verification failed [provider=${providerId ?? 'unknown'}]:`, error);
 
-    if (isRedirectRefusal(error)) {
+    if (isRejectedRedirectError(error)) {
       return apiError('REDIRECT_NOT_ALLOWED', 403, 'Redirects are not allowed');
     }
     // Refused, unresolvable, timed-out and policy-blocked targets all get the
