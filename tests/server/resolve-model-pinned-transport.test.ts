@@ -295,6 +295,66 @@ describe('resolveModel with a client-supplied base URL', () => {
     );
   });
 
+  it('reports an HTTP status above 599 as 502', async () => {
+    process.env.ALLOW_LOCAL_NETWORKS = 'true';
+    const provider = await startLoopback((_req, res) => {
+      res.writeHead(799, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'internal-secret-body' } }));
+    });
+    const model = await resolveClientModel(`${provider.origin}/v1`);
+
+    const error = await generateError(model);
+
+    expect(error.message).toBe('Bad Gateway');
+    expect(upstreamHttpStatus(error)).toBe(502);
+    expect(error).not.toBeInstanceOf(RangeError);
+  });
+
+  it('does not wait for an endless error body', async () => {
+    process.env.ALLOW_LOCAL_NETWORKS = 'true';
+    const timers: ReturnType<typeof setInterval>[] = [];
+    let written = 0;
+    const provider = await startLoopback((_req, res) => {
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      const chunk = 'x'.repeat(64 * 1024);
+      const timer = setInterval(() => {
+        if (res.destroyed) return clearInterval(timer);
+        res.write(chunk);
+        written += chunk.length;
+      }, 5);
+      timers.push(timer);
+      res.on('close', () => clearInterval(timer));
+    });
+    const model = await resolveClientModel(`${provider.origin}/v1`);
+
+    try {
+      const started = Date.now();
+      const error = await generateError(model);
+
+      expect(error.message).toBe('Internal Server Error');
+      expect(Date.now() - started).toBeLessThan(3000);
+    } finally {
+      for (const timer of timers) clearInterval(timer);
+    }
+    expect(written).toBeGreaterThan(0);
+  }, 10_000);
+
+  it('does not wait for a stalled error body', async () => {
+    process.env.ALLOW_LOCAL_NETWORKS = 'true';
+    const provider = await startLoopback((_req, res) => {
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.write('partial');
+      // Never ends the body.
+    });
+    const model = await resolveClientModel(`${provider.origin}/v1`);
+
+    const started = Date.now();
+    const error = await generateError(model);
+
+    expect(error.message).toBe('Internal Server Error');
+    expect(Date.now() - started).toBeLessThan(3000);
+  }, 10_000);
+
   it('surfaces a streaming HTTP error without the provider response text', async () => {
     process.env.ALLOW_LOCAL_NETWORKS = 'true';
     const provider = await startLoopback((_req, res) => {

@@ -71,21 +71,64 @@ export function toCallerSafeTransportError(error: unknown): unknown {
 // rate-limit and request-id headers) is kept for the SDK's retry handling.
 const DROPPED_ERROR_HEADERS = ['content-type', 'content-length', 'content-encoding'];
 
+// How much of an error body is kept for the server log, and how long reading
+// it may take. The body is only logged, so a large or trickling one is cut
+// short and cancelled instead of being buffered.
+const ERROR_BODY_LOG_BYTES = 1024;
+const ERROR_BODY_LOG_WAIT_MS = 1000;
+
+async function readErrorBodyPreview(response: Response): Promise<string> {
+  const body = response.body;
+  if (!body) return '';
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), ERROR_BODY_LOG_WAIT_MS);
+  });
+  try {
+    while (total < ERROR_BODY_LOG_BYTES) {
+      const next = await Promise.race([reader.read(), deadline]);
+      if (next === 'timeout' || next.done) break;
+      chunks.push(next.value);
+      total += next.value.byteLength;
+    }
+  } catch {
+    // An unreadable body only loses the log preview.
+  } finally {
+    clearTimeout(timer);
+    reader.cancel().catch(() => {});
+  }
+  const bytes = new Uint8Array(Math.min(total, ERROR_BODY_LOG_BYTES));
+  let offset = 0;
+  for (const chunk of chunks) {
+    if (offset >= bytes.length) break;
+    const part = chunk.subarray(0, bytes.length - offset);
+    bytes.set(part, offset);
+    offset += part.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
 /**
  * Replace an HTTP error response with an empty body and the standard reason
  * phrase. The AI SDK builds the error message from the provider's error JSON
  * (or the status text when the body is empty), and routes relay that message,
  * so a caller-chosen endpoint's response text never reaches the caller. The
- * status and headers are kept, so retry and status classification still work.
+ * status and headers are kept, so retry and status classification still work;
+ * a status outside the range a `Response` accepts (600-999 pass through the
+ * transport) is reported as 502.
  */
 async function withoutErrorBody(response: Response): Promise<Response> {
-  const text = await response.text().catch(() => '');
-  log.warn(`LLM provider answered HTTP ${response.status}: ${text.slice(0, 500)}`);
+  const preview = await readErrorBodyPreview(response);
+  log.warn(`LLM provider answered HTTP ${response.status}: ${preview.slice(0, 500)}`);
+  const status = response.status <= 599 ? response.status : 502;
   const headers = new Headers(response.headers);
   for (const name of DROPPED_ERROR_HEADERS) headers.delete(name);
   return new Response(null, {
-    status: response.status,
-    statusText: STATUS_CODES[response.status] ?? '',
+    status,
+    statusText: STATUS_CODES[status] ?? '',
     headers,
   });
 }
