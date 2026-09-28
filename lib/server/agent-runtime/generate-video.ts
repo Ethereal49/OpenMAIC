@@ -179,7 +179,10 @@ async function storeGeneratedPoster(
   assetStore?: AssetStore,
 ): Promise<string | undefined> {
   try {
-    const response = await fetchProviderResultUrl(posterUrl, { signal });
+    const response = await fetchProviderResultUrl(posterUrl, {
+      signal,
+      maxBytes: MAX_REMOTE_IMAGE_BYTES,
+    });
     if (!response.ok) throw new Error(`Generated poster download failed: HTTP ${response.status}`);
     const mime = response.headers.get('content-type')?.split(';')[0]?.trim() || 'image/jpeg';
     if (!mime.startsWith('image/')) {
@@ -241,7 +244,10 @@ export async function defaultPersistGeneratedVideo(
     throw new Error(`Video provider returned an unsupported URL protocol: ${parsed.protocol}`);
   }
 
-  const response = await fetchProviderResultUrl(result.url, { signal });
+  const response = await fetchProviderResultUrl(result.url, {
+    signal,
+    maxBytes: MAX_GENERATED_VIDEO_BYTES,
+  });
   if (!response.ok) throw new Error(`Generated video download failed: HTTP ${response.status}`);
   const mime = response.headers.get('content-type')?.split(';')[0]?.trim() || 'video/mp4';
   if (!mime.startsWith('video/')) {

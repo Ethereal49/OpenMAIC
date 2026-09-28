@@ -119,7 +119,10 @@ async function imageBytes(
   }
   if (!result.url) throw new Error('Image provider returned neither URL nor image bytes');
 
-  const response = await fetchProviderResultUrl(result.url, { signal });
+  const response = await fetchProviderResultUrl(result.url, {
+    signal,
+    maxBytes: MAX_REMOTE_IMAGE_BYTES,
+  });
   if (!response.ok) throw new Error(`Generated image download failed: HTTP ${response.status}`);
   const mime = response.headers.get('content-type')?.split(';')[0]?.trim() || 'image/png';
   if (!mime.startsWith('image/')) {

@@ -39,6 +39,7 @@ vi.mock('@/lib/logger', () => ({
   createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }),
 }));
 
+const MAX = 1024 * 1024;
 const originalAllowLocal = process.env.ALLOW_LOCAL_NETWORKS;
 let tcpServer: Server | undefined;
 
@@ -69,11 +70,32 @@ describe('fetchProviderResultUrl', () => {
 
     const res = await fetchProviderResultUrl(
       `data:video/mp4;base64,${Buffer.from('video-bytes').toString('base64')}`,
+      { maxBytes: MAX },
     );
 
     expect(spy).not.toHaveBeenCalled();
     expect(res.headers.get('content-type')).toBe('video/mp4');
     expect(Buffer.from(await res.arrayBuffer()).toString()).toBe('video-bytes');
+  });
+
+  it('accepts a data: URL exactly at the limit', async () => {
+    const payload = Buffer.alloc(10, 1).toString('base64'); // 10 bytes, padded
+
+    const res = await fetchProviderResultUrl(`data:image/png;base64,${payload}`, { maxBytes: 10 });
+
+    expect((await res.arrayBuffer()).byteLength).toBe(10);
+  });
+
+  it.each([
+    ['base64', `data:image/png;base64,${Buffer.alloc(11).toString('base64')}`],
+    ['percent-encoded', `data:text/plain,${'%41'.repeat(11)}`],
+  ])('refuses a %s data: URL over the limit before decoding it', async (_kind, url) => {
+    const from = vi.spyOn(Buffer, 'from');
+
+    await expect(fetchProviderResultUrl(url, { maxBytes: 10 })).rejects.toThrow(
+      'Download failed: data URL exceeds the 10-byte limit',
+    );
+    expect(from).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -84,7 +106,7 @@ describe('fetchProviderResultUrl', () => {
   ])('refuses %s before any request', async (url, message) => {
     const spy = vi.spyOn(providerFetchModule, 'providerFetch');
 
-    await expect(fetchProviderResultUrl(url)).rejects.toThrow(message);
+    await expect(fetchProviderResultUrl(url, { maxBytes: MAX })).rejects.toThrow(message);
     expect(spy).not.toHaveBeenCalled();
   });
 
@@ -94,7 +116,10 @@ describe('fetchProviderResultUrl', () => {
       .mockResolvedValue(new Response('ok', { status: 200 }));
     const controller = new AbortController();
 
-    await fetchProviderResultUrl('https://cdn.example.com/x.png', { signal: controller.signal });
+    await fetchProviderResultUrl('https://cdn.example.com/x.png', {
+      signal: controller.signal,
+      maxBytes: MAX,
+    });
 
     expect(spy).toHaveBeenCalledWith(
       'https://cdn.example.com/x.png',
@@ -113,7 +138,7 @@ describe('fetchProviderResultUrl', () => {
     const port = (tcpServer.address() as AddressInfo).port;
 
     await expect(
-      fetchProviderResultUrl(`https://rebind.test:${port}/x.png`),
+      fetchProviderResultUrl(`https://rebind.test:${port}/x.png`, { maxBytes: MAX }),
     ).rejects.toBeInstanceOf(UnsafeNetworkTargetError);
     expect(mocks.callbackLookup).toHaveBeenCalledWith(
       'rebind.test',

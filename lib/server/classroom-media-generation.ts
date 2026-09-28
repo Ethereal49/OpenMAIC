@@ -82,15 +82,12 @@ const IMAGE_EXTENSION_BY_MIME: Record<string, string> = {
 
 export async function downloadToBuffer(url: string): Promise<Buffer> {
   if (url.startsWith('data:')) {
-    const { bytes: buf } = decodeDataUrl(url);
-    if (buf.byteLength > DOWNLOAD_MAX_SIZE) {
-      throw new Error(`File too large: ${buf.byteLength} bytes (max ${DOWNLOAD_MAX_SIZE})`);
-    }
-    return buf;
+    return decodeDataUrl(url, DOWNLOAD_MAX_SIZE).bytes;
   }
 
   const resp = await fetchProviderResultUrl(url, {
     signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
+    maxBytes: DOWNLOAD_MAX_SIZE,
   });
   if (!resp.ok) throw new Error(`Download failed: ${resp.status} ${resp.statusText}`);
 
