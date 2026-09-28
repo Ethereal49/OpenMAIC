@@ -13,6 +13,10 @@ import {
   type ProviderFetchPolicy,
 } from '@/lib/server/provider-fetch';
 import { validateUrlForSSRF } from '@/lib/server/ssrf-guard';
+import {
+  ALIDOCMIND_ENDPOINT_NOT_ALLOWED_MESSAGE,
+  resolveSafeClientAliDocMindEndpoint,
+} from '@/lib/server/alidocmind-endpoint';
 import { MINERU_CLOUD_DEFAULT_BASE } from '@/lib/pdf/constants';
 
 const log = createLogger('Verify PDF Provider');
@@ -72,14 +76,15 @@ export async function POST(req: NextRequest) {
             'AccessKey ID and AccessKey Secret are required for AliDocMind',
           );
         }
-        // Validate a client-supplied endpoint before we sign a request to it.
+        // The DocMind SDK resolves and connects on its own, so a
+        // client-supplied endpoint must be an official DocMind host; anything
+        // else is refused before we sign a request to it.
         if (endpoint) {
-          const ssrfError = await validateUrlForSSRF(
-            endpoint.startsWith('http') ? endpoint : `https://${endpoint}`,
-          );
-          if (ssrfError) {
-            return apiError('INVALID_URL', 403, ssrfError);
+          const safeEndpoint = resolveSafeClientAliDocMindEndpoint(endpoint);
+          if (!safeEndpoint) {
+            return apiError('INVALID_URL', 403, ALIDOCMIND_ENDPOINT_NOT_ALLOWED_MESSAGE);
           }
+          endpoint = safeEndpoint;
         }
       }
 

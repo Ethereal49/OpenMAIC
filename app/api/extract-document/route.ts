@@ -24,6 +24,10 @@ import {
 } from '@/lib/persistence/resolve-server-asset';
 import { apiError, apiSuccess } from '@/lib/server/api-response';
 import { validateUrlForSSRF } from '@/lib/server/ssrf-guard';
+import {
+  ALIDOCMIND_ENDPOINT_NOT_ALLOWED_MESSAGE,
+  resolveSafeClientAliDocMindEndpoint,
+} from '@/lib/server/alidocmind-endpoint';
 import { MAX_EXTRACT_DOCUMENT_FILE_SIZE_BYTES } from '@/lib/constants/generation';
 
 // The asset-id path resolves bytes from the server asset store, which lives in
@@ -252,14 +256,16 @@ async function runExtraction(
     // a YAML-only deployment works — the client-level env fallback reads env
     // vars only. Client-entered creds are used only when unmanaged.
     const mediaManagedCreds = mediaManaged ? resolveManagedAliDocMindCredentials() : undefined;
-    const mediaClientBaseUrl = mediaManaged ? undefined : requestConfig.baseUrl || undefined;
-    // Same SSRF guard the document path applies: a client-supplied endpoint
-    // must not let the server connect to internal/metadata hosts.
+    let mediaClientBaseUrl = mediaManaged ? undefined : requestConfig.baseUrl || undefined;
+    // Only the AliDocMind media extractor reads a base URL, and its SDK cannot
+    // be pinned to a validated address: a client-supplied endpoint must be an
+    // official DocMind host.
     if (mediaClientBaseUrl) {
-      const ssrfError = await validateUrlForSSRF(mediaClientBaseUrl);
-      if (ssrfError) {
-        return apiError('INVALID_URL', 403, ssrfError);
+      const safeEndpoint = resolveSafeClientAliDocMindEndpoint(mediaClientBaseUrl);
+      if (!safeEndpoint) {
+        return apiError('INVALID_URL', 403, ALIDOCMIND_ENDPOINT_NOT_ALLOWED_MESSAGE);
       }
+      mediaClientBaseUrl = safeEndpoint;
     }
     const mediaArtifact = await extractMedia({
       buffer,
@@ -383,7 +389,14 @@ async function runExtraction(
       );
     }
   }
-  if (clientBaseUrl) {
+  if (clientBaseUrl && provider.id === 'alidocmind') {
+    // The DocMind SDK cannot be pinned: only official endpoints are accepted.
+    const safeEndpoint = resolveSafeClientAliDocMindEndpoint(clientBaseUrl);
+    if (!safeEndpoint) {
+      return apiError('INVALID_URL', 403, ALIDOCMIND_ENDPOINT_NOT_ALLOWED_MESSAGE);
+    }
+    clientBaseUrl = safeEndpoint;
+  } else if (clientBaseUrl) {
     const ssrfError = await validateUrlForSSRF(clientBaseUrl);
     if (ssrfError) {
       return apiError('INVALID_URL', 403, ssrfError);
