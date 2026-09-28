@@ -39,8 +39,7 @@ import { splitLongSpeechActions } from '@/lib/audio/tts-utils';
 import { isGeneratedMediaPlaceholder } from '@/lib/media/media-ref';
 import { resolveImageSize } from '@/lib/server/image-sizing';
 import { VOXCPM_AUTO_VOICE_ID, VOXCPM_TTS_PROVIDER_ID } from '@/lib/audio/voxcpm';
-import { providerFetch } from '@/lib/server/provider-fetch';
-import { UnsafeNetworkTargetError, validateUrlForSSRFWithPolicy } from '@/lib/server/ssrf-guard';
+import { decodeDataUrl, fetchProviderResultUrl } from '@/lib/server/provider-result-fetch';
 
 const log = createLogger('ClassroomMedia');
 
@@ -83,40 +82,16 @@ const IMAGE_EXTENSION_BY_MIME: Record<string, string> = {
 
 export async function downloadToBuffer(url: string): Promise<Buffer> {
   if (url.startsWith('data:')) {
-    const commaIndex = url.indexOf(',');
-    if (commaIndex === -1) {
-      throw new Error('Invalid data URL: missing comma');
-    }
-    const meta = url.slice(5, commaIndex);
-    const rawData = url.slice(commaIndex + 1);
-    const isBase64 = meta.split(';').includes('base64');
-    const buf = isBase64
-      ? Buffer.from(rawData, 'base64')
-      : Buffer.from(decodeURIComponent(rawData), 'utf8');
+    const { bytes: buf } = decodeDataUrl(url);
     if (buf.byteLength > DOWNLOAD_MAX_SIZE) {
       throw new Error(`File too large: ${buf.byteLength} bytes (max ${DOWNLOAD_MAX_SIZE})`);
     }
     return buf;
   }
 
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw new Error('Download failed: invalid URL');
-  }
-  if (parsed.protocol !== 'https:') {
-    throw new Error(`Download failed: URL must use https (${parsed.protocol})`);
-  }
-
-  const ssrfError = await validateUrlForSSRFWithPolicy(parsed.href, { allowLocalNetworks: false });
-  if (ssrfError) throw new UnsafeNetworkTargetError(ssrfError);
-
-  const resp = await providerFetch(
-    url,
-    { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) },
-    { allowLocalNetworks: false, requireHttps: true },
-  );
+  const resp = await fetchProviderResultUrl(url, {
+    signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
+  });
   if (!resp.ok) throw new Error(`Download failed: ${resp.status} ${resp.statusText}`);
 
   const contentLength = Number(resp.headers.get('content-length') || 0);
