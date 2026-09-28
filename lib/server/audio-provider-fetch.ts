@@ -79,6 +79,12 @@ export type AudioProviderFetchPolicy = Partial<SsrfValidationPolicy> & {
    * requests are affected (`rejectRedirects` already refuses every hop).
    */
   requireHttps?: boolean;
+  /**
+   * Undici timeouts for the pinned dispatcher. Unset keeps undici's defaults;
+   * LLM calls raise both so a slow thinking model is not cut off.
+   */
+  headersTimeout?: number;
+  bodyTimeout?: number;
 };
 
 /** A `fetch`-shaped provider transport bound to one address policy. */
@@ -94,15 +100,24 @@ export function resolveAllowLocalNetworks(allowLocalNetworks?: boolean): boolean
   return allowLocalNetworks ?? allowLocalNetworksEnabled();
 }
 
-// One pooled dispatcher per policy. Keeping the pinned agents alive lets undici
-// reuse connections; they are replaced wholesale by the test reset below.
-const dispatchers = new Map<boolean, Dispatcher>();
+// One pooled dispatcher per policy (address policy plus timeouts). Keeping the
+// pinned agents alive lets undici reuse connections; they are replaced
+// wholesale by the test reset below.
+const dispatchers = new Map<string, Dispatcher>();
 
-function dispatcherFor(allowLocalNetworks: boolean): Dispatcher {
-  let dispatcher = dispatchers.get(allowLocalNetworks);
+function dispatcherFor(
+  allowLocalNetworks: boolean,
+  timeouts: Pick<AudioProviderFetchPolicy, 'headersTimeout' | 'bodyTimeout'> = {},
+): Dispatcher {
+  const key = `${allowLocalNetworks}:${timeouts.headersTimeout ?? ''}:${timeouts.bodyTimeout ?? ''}`;
+  let dispatcher = dispatchers.get(key);
   if (!dispatcher) {
-    dispatcher = createValidatedDispatcher({ allowLocalNetworks });
-    dispatchers.set(allowLocalNetworks, dispatcher);
+    dispatcher = createValidatedDispatcher({
+      allowLocalNetworks,
+      headersTimeout: timeouts.headersTimeout,
+      bodyTimeout: timeouts.bodyTimeout,
+    });
+    dispatchers.set(key, dispatcher);
   }
   return dispatcher;
 }
@@ -173,7 +188,7 @@ export async function audioProviderFetch(
   policy: AudioProviderFetchPolicy = {},
 ): Promise<Response> {
   const allowLocalNetworks = resolveAllowLocalNetworks(policy.allowLocalNetworks);
-  const dispatcher = dispatcherFor(allowLocalNetworks);
+  const dispatcher = dispatcherFor(allowLocalNetworks, policy);
   // Normalize the body once, before either transport path can serialize it:
   // both the direct `redirect: 'error'` request and the per-hop loop hand the
   // init to undici's fetch, whose serializer is the one that must recognize it.
