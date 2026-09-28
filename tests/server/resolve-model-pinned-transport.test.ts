@@ -17,9 +17,12 @@ import { generateText, streamText } from 'ai';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { resolveModel } from '@/lib/server/resolve-model';
+import { toCallerSafeTransportError } from '@/lib/server/llm-provider-fetch';
+import { upstreamHttpStatus } from '@/lib/server/llm-error-response';
 import { destroyAudioProviderDispatchersForTests } from '@/lib/server/provider-fetch';
 import {
   answerWith,
+  closedPort,
   closeLoopbackServers,
   LOOPBACK_ANSWER,
   PUBLIC_ANSWER,
@@ -38,6 +41,10 @@ vi.mock('@/lib/server/provider-config', () => ({
   resolveApiKey: (_id: string, clientKey: string) => clientKey || 'server-key',
   resolveBaseUrl: (_id: string, clientBaseUrl?: string) => clientBaseUrl ?? mocks.managedBaseUrl,
   resolveProxy: () => undefined,
+}));
+
+vi.mock('@/lib/logger', () => ({
+  createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }),
 }));
 
 vi.mock('node:dns', async (importOriginal) => {
@@ -111,7 +118,17 @@ async function resolveClientModel(baseUrl: string) {
   return model;
 }
 
+async function generateError(model: Awaited<ReturnType<typeof resolveClientModel>>) {
+  try {
+    await generateText({ model, prompt: 'hi', maxRetries: 0 });
+  } catch (error) {
+    return error as Error;
+  }
+  throw new Error('expected generateText to fail');
+}
+
 const originalAllowLocal = process.env.ALLOW_LOCAL_NETWORKS;
+const originalDefaultModel = process.env.DEFAULT_MODEL;
 const globalFetch = vi.fn();
 
 describe('resolveModel with a client-supplied base URL', () => {
@@ -125,6 +142,7 @@ describe('resolveModel with a client-supplied base URL', () => {
     destroyAudioProviderDispatchersForTests();
     delete process.env.ALLOW_LOCAL_NETWORKS;
     delete process.env.MODEL_ROUTES;
+    delete process.env.DEFAULT_MODEL;
     globalFetch.mockReset();
     globalFetch.mockRejectedValue(new Error('global fetch must not be used'));
     vi.stubGlobal('fetch', globalFetch);
@@ -135,6 +153,8 @@ describe('resolveModel with a client-supplied base URL', () => {
     destroyAudioProviderDispatchersForTests();
     if (originalAllowLocal === undefined) delete process.env.ALLOW_LOCAL_NETWORKS;
     else process.env.ALLOW_LOCAL_NETWORKS = originalAllowLocal;
+    if (originalDefaultModel === undefined) delete process.env.DEFAULT_MODEL;
+    else process.env.DEFAULT_MODEL = originalDefaultModel;
     await closeLoopbackServers();
   });
 
@@ -207,4 +227,127 @@ describe('resolveModel with a client-supplied base URL', () => {
     expect(result.text).toBe('OK');
     expect(managed.requests()).toBe(1);
   }, 20_000);
+
+  it.each(['ollama:llama3.3', 'lemonade:Gemma-4-26B-A4B-it-GGUF'])(
+    'refuses the local catalog default of an unmanaged %s without the opt-in',
+    async (modelString) => {
+      await expect(resolveModel({ modelString })).rejects.toThrow(
+        /Local\/private network URLs are not allowed/,
+      );
+    },
+  );
+
+  it('pins an unmanaged provider default endpoint when no base URL is sent', async () => {
+    const { model } = await resolveModel({ modelString: 'openai:gpt-4o', apiKey: 'client-key' });
+
+    // The connect-time lookup for the catalog host answers loopback: refused.
+    const error = await generateError(model);
+
+    expect(error.message).not.toMatch(/127\.0\.0\.1|ECONNREFUSED/);
+    expect(mocks.callbackLookup).toHaveBeenCalledWith(
+      'api.openai.com',
+      expect.anything(),
+      expect.any(Function),
+    );
+    expect(globalFetch).not.toHaveBeenCalled();
+  });
+
+  it('keeps an operator-selected default model on the operator transport', async () => {
+    process.env.DEFAULT_MODEL = 'ollama:llama3.3';
+
+    const resolved = await resolveModel({});
+
+    expect(resolved.providerId).toBe('ollama');
+    expect(mocks.promisesLookup).not.toHaveBeenCalled();
+  });
+
+  it('reports a refused connection without errno or address detail', async () => {
+    process.env.ALLOW_LOCAL_NETWORKS = 'true';
+    const model = await resolveClientModel(`http://127.0.0.1:${await closedPort()}/v1`);
+
+    const error = await generateError(model);
+
+    expect(error.message).toBe('Cannot connect to API: connection failed');
+    expect((error.cause as Error).message).toBe('connection failed');
+    expect(JSON.stringify(error, Object.getOwnPropertyNames(error))).not.toMatch(
+      /ECONNREFUSED|errno|syscall/,
+    );
+  });
+
+  it.each([
+    [401, 'Unauthorized'],
+    [429, 'Too Many Requests'],
+    [500, 'Internal Server Error'],
+  ])('reports HTTP %i by status without the provider response text', async (status, text) => {
+    process.env.ALLOW_LOCAL_NETWORKS = 'true';
+    const provider = await startLoopback((_req, res) => {
+      res.writeHead(status, 'internal-secret-reason', { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'internal-secret-body', type: 'x' } }));
+    });
+    const model = await resolveClientModel(`${provider.origin}/v1`);
+
+    const error = await generateError(model);
+
+    expect(error.message).toBe(text);
+    expect(upstreamHttpStatus(error)).toBe(status);
+    expect(JSON.stringify(error, Object.getOwnPropertyNames(error))).not.toContain(
+      'internal-secret',
+    );
+  });
+
+  it('surfaces a streaming HTTP error without the provider response text', async () => {
+    process.env.ALLOW_LOCAL_NETWORKS = 'true';
+    const provider = await startLoopback((_req, res) => {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'internal-secret-body' } }));
+    });
+    const model = await resolveClientModel(`${provider.origin}/v1`);
+
+    const errors: unknown[] = [];
+    const result = streamText({
+      model,
+      prompt: 'hi',
+      maxRetries: 0,
+      onError: ({ error }) => {
+        errors.push(error);
+      },
+    });
+    await result.consumeStream();
+
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as Error).message).toBe('Internal Server Error');
+    expect(JSON.stringify(errors[0], Object.getOwnPropertyNames(errors[0]))).not.toContain(
+      'internal-secret',
+    );
+  });
+});
+
+describe('toCallerSafeTransportError', () => {
+  const fetchFailed = (cause: unknown) => new TypeError('fetch failed', { cause });
+
+  it.each([
+    [
+      'a timeout',
+      Object.assign(new Error('Headers Timeout Error'), { code: 'UND_ERR_HEADERS_TIMEOUT' }),
+      'request timed out',
+    ],
+    [
+      'a resolver failure',
+      Object.assign(new Error('getaddrinfo ENOTFOUND internal.example'), { code: 'ENOTFOUND' }),
+      'connection failed',
+    ],
+    ['a refused redirect', new Error('unexpected redirect'), 'redirects are not allowed'],
+  ])('maps %s to a fixed cause', (_name, cause, reason) => {
+    const mapped = toCallerSafeTransportError(fetchFailed(cause)) as TypeError;
+
+    expect(mapped).toBeInstanceOf(TypeError);
+    expect(mapped.message).toBe('fetch failed');
+    expect((mapped.cause as Error).message).toBe(reason);
+  });
+
+  it('passes a caller abort through unchanged', () => {
+    const abort = new DOMException('The operation was aborted.', 'AbortError');
+
+    expect(toCallerSafeTransportError(abort)).toBe(abort);
+  });
 });
