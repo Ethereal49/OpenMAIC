@@ -178,13 +178,16 @@ async function readMinerUJson<T>(res: Response, context: string): Promise<T> {
   try {
     json = JSON.parse(text) as MinerUEnvelope<T>;
   } catch {
-    throw new Error(
-      `MinerU Cloud ${context}: invalid JSON (HTTP ${res.status}): ${text.slice(0, 500)}`,
+    // Never quote the body: it is logged here and kept out of caller-facing
+    // errors (the parse routes relay error messages).
+    log.warn(
+      `[MinerU Cloud] ${context}: non-JSON body (HTTP ${res.status}): ${text.slice(0, 500)}`,
     );
+    throw new Error(`MinerU Cloud ${context}: invalid JSON response (HTTP ${res.status})`);
   }
   if (!res.ok) {
     throw new Error(
-      `MinerU Cloud ${context}: HTTP ${res.status} — ${json.msg || text.slice(0, 300)}`,
+      `MinerU Cloud ${context}: HTTP ${res.status}${json.msg ? ` — ${json.msg}` : ''}`,
     );
   }
   if (json.code !== 0) {
@@ -303,10 +306,8 @@ async function parseMinerUZip(zipUrl: string): Promise<ParsedPdfContent> {
     'ZIP download',
   );
   if (!zipRes.ok) {
-    const text = await readBoundedBody(zipRes, MAX_JSON_BYTES, 'ZIP download')
-      .then((buf) => buf.toString('utf8'))
-      .catch(() => zipRes.statusText);
-    throw new Error(`MinerU Cloud ZIP download failed (${zipRes.status}): ${text.slice(0, 300)}`);
+    await zipRes.body?.cancel().catch(() => undefined);
+    throw new Error(`MinerU Cloud ZIP download failed (${zipRes.status})`);
   }
 
   const zipBuf = await readBoundedBody(zipRes, MAX_ZIP_BYTES, 'ZIP download');
@@ -544,10 +545,8 @@ export async function parseWithMinerUCloud(
     5,
   );
   if (!putRes.ok) {
-    const text = await readBoundedBody(putRes, MAX_JSON_BYTES, 'presigned upload')
-      .then((buf) => buf.toString('utf8'))
-      .catch(() => putRes.statusText);
-    throw new Error(`MinerU Cloud upload failed (${putRes.status}): ${text.slice(0, 400)}`);
+    await putRes.body?.cancel().catch(() => undefined);
+    throw new Error(`MinerU Cloud upload failed (${putRes.status})`);
   }
 
   // Give the backend a moment to register the upload
