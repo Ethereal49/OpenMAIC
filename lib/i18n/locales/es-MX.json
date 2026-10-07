@@ -61,6 +61,12 @@
     "pptx": "Exportar PPTX",
     "resourcePack": "Exportar paquete de recursos",
     "resourcePackDesc": "PPTX + páginas interactivas",
+    "withPlaceholders": "Con diapositivas de marcador (recomendado)",
+    "withPlaceholdersDesc": "Las páginas interactivas, cuestionarios y proyectos obtienen una diapositiva con código QR",
+    "slidesOnly": "Solo diapositivas",
+    "slidesOnlyDesc": "Solo las escenas de diapositivas",
+    "packWithPlaceholders": "PPTX con marcadores + páginas interactivas (recomendado)",
+    "packSlidesOnly": "PPTX solo con diapositivas + páginas interactivas",
     "exporting": "Exportando...",
     "exportSuccess": "Exportación exitosa",
     "exportFailed": "Error al exportar",
@@ -148,6 +154,7 @@
     "subtitlesEmpty": "No hay narración para generar subtítulos",
     "subtitlesFailed": "Error al descargar los subtítulos",
     "noSlides": "No hay diapositivas para exportar",
+    "noSlidesSkipped": "Este curso no tiene diapositivas — se omitió el PPTX",
     "nothingToExport": "Nada que exportar",
     "placeholder": {
       "interactiveLabel": "Interactivo",
@@ -157,7 +164,11 @@
       "quizQuestionCount": "Preguntas: {{count}}",
       "openOnline": "Abrir en línea",
       "openOffline": "Abrir copia sin conexión",
-      "offlineHint": "funciona si esta presentación permanece en la carpeta extraída del paquete de recursos"
+      "offlineHint": "funciona si esta presentación permanece en la carpeta extraída del paquete de recursos",
+      "pblLabel": "Proyecto",
+      "pblDesc": "Actividad basada en proyectos con roles de IA. Ábrela en línea o escanea el código QR.",
+      "pblGoal": "Objetivo: {{goal}}",
+      "pblMilestoneCount": "Hitos: {{count}}"
     }
   },
   "import": {

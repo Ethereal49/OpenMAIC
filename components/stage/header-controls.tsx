@@ -293,29 +293,84 @@ export function HeaderControls({
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" sideOffset={8} className="min-w-[240px]">
-          <DropdownMenuItem
-            disabled={!canExport}
-            onSelect={exportPPTX}
-            className="cursor-pointer gap-2.5"
-            title={canExport ? undefined : t('export.mediaPending')}
-          >
-            <FileDown className="w-4 h-4 text-gray-400 shrink-0" />
-            <span>{t('export.pptx')}</span>
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            disabled={!canExport}
-            onSelect={exportResourcePack}
-            className="cursor-pointer gap-2.5"
-            title={canExport ? undefined : t('export.mediaPending')}
-          >
-            <Package className="w-4 h-4 text-gray-400 shrink-0" />
-            <div>
-              <div>{t('export.resourcePack')}</div>
-              <div className="text-[11px] text-gray-400 dark:text-gray-500">
-                {t('export.resourcePackDesc')}
+          {/* PPTX and Resource Pack: choose per export whether quiz,
+              interactive and PBL scenes get placeholder slides. */}
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger
+              disabled={!canExport}
+              title={canExport ? undefined : t('export.mediaPending')}
+              className="cursor-pointer gap-2.5"
+            >
+              <FileDown className="w-4 h-4 text-gray-400 shrink-0" aria-hidden="true" />
+              <span>{t('export.pptx')}</span>
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="min-w-[240px]">
+              <DropdownMenuItem
+                disabled={!canExport}
+                onSelect={() => exportPPTX({ includePlaceholders: true })}
+                className="cursor-pointer gap-2.5"
+              >
+                <FileDown className="w-4 h-4 text-gray-400 shrink-0" aria-hidden="true" />
+                <div>
+                  <div>{t('export.withPlaceholders')}</div>
+                  <div className="text-[11px] text-gray-400 dark:text-gray-500">
+                    {t('export.withPlaceholdersDesc')}
+                  </div>
+                </div>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={!canExport}
+                onSelect={() => exportPPTX({ includePlaceholders: false })}
+                className="cursor-pointer gap-2.5"
+              >
+                <FileDown className="w-4 h-4 text-gray-400 shrink-0" aria-hidden="true" />
+                <div>
+                  <div>{t('export.slidesOnly')}</div>
+                  <div className="text-[11px] text-gray-400 dark:text-gray-500">
+                    {t('export.slidesOnlyDesc')}
+                  </div>
+                </div>
+              </DropdownMenuItem>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger
+              disabled={!canExport}
+              title={canExport ? undefined : t('export.mediaPending')}
+              className="cursor-pointer gap-2.5"
+            >
+              <Package className="w-4 h-4 text-gray-400 shrink-0" aria-hidden="true" />
+              <div>
+                <div>{t('export.resourcePack')}</div>
+                <div className="text-[11px] text-gray-400 dark:text-gray-500">
+                  {t('export.resourcePackDesc')}
+                </div>
               </div>
-            </div>
-          </DropdownMenuItem>
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="min-w-[240px]">
+              <DropdownMenuItem
+                disabled={!canExport}
+                onSelect={() => exportResourcePack({ includePlaceholders: true })}
+                className="cursor-pointer gap-2.5"
+              >
+                <Package className="w-4 h-4 text-gray-400 shrink-0" aria-hidden="true" />
+                <div>
+                  <div>{t('export.packWithPlaceholders')}</div>
+                  <div className="text-[11px] text-gray-400 dark:text-gray-500">
+                    {t('export.withPlaceholdersDesc')}
+                  </div>
+                </div>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={!canExport}
+                onSelect={() => exportResourcePack({ includePlaceholders: false })}
+                className="cursor-pointer gap-2.5"
+              >
+                <Package className="w-4 h-4 text-gray-400 shrink-0" aria-hidden="true" />
+                <span>{t('export.packSlidesOnly')}</span>
+              </DropdownMenuItem>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
           <DropdownMenuItem
             disabled={!canExport || isExportingZip}
             onSelect={exportClassroomZip}

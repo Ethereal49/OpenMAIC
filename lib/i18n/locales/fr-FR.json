@@ -61,6 +61,12 @@
     "pptx": "Exporter en PPTX",
     "resourcePack": "Exporter le pack de ressources",
     "resourcePackDesc": "PPTX + pages interactives",
+    "withPlaceholders": "Avec diapositives de remplacement (recommandé)",
+    "withPlaceholdersDesc": "Pages interactives, quiz et projets obtiennent une diapositive avec QR code",
+    "slidesOnly": "Diapositives uniquement",
+    "slidesOnlyDesc": "Seulement les scènes de diapositives",
+    "packWithPlaceholders": "PPTX avec remplacements + pages interactives (recommandé)",
+    "packSlidesOnly": "PPTX diapositives seules + pages interactives",
     "exporting": "Export en cours…",
     "exportSuccess": "Export réussi",
     "exportFailed": "Échec de l’export",
@@ -148,6 +154,7 @@
     "subtitlesEmpty": "Aucune narration à partir de laquelle générer des sous-titres",
     "subtitlesFailed": "Échec du téléchargement des sous-titres",
     "noSlides": "Aucune diapositive à exporter",
+    "noSlidesSkipped": "Aucune diapositive dans ce cours. Export PPTX ignoré.",
     "nothingToExport": "Rien à exporter",
     "placeholder": {
       "interactiveLabel": "Interactif",
@@ -157,7 +164,11 @@
       "quizQuestionCount": "Questions : {{count}}",
       "openOnline": "Ouvrir en ligne",
       "openOffline": "Ouvrir la copie hors ligne",
-      "offlineHint": "fonctionne si cette présentation reste dans le dossier extrait du pack de ressources"
+      "offlineHint": "fonctionne si cette présentation reste dans le dossier extrait du pack de ressources",
+      "pblLabel": "Projet",
+      "pblDesc": "Activité par projet avec des rôles IA. Ouvrez-la en ligne ou scannez le QR code.",
+      "pblGoal": "Objectif : {{goal}}",
+      "pblMilestoneCount": "Étapes : {{count}}"
     }
   },
   "import": {
