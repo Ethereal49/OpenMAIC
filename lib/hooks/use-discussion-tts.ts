@@ -34,6 +34,7 @@ import {
 interface DiscussionTTSOptions {
   enabled: boolean;
   agents: AgentConfig[];
+  beforePlayback?: () => Promise<boolean>;
   onAudioStateChange?: (agentId: string | null, state: AudioIndicatorState) => void;
 }
 
@@ -55,7 +56,12 @@ interface PreparedSegment {
   result: Promise<{ audioUrl: string } | { error: unknown }>;
 }
 
-export function useDiscussionTTS({ enabled, agents, onAudioStateChange }: DiscussionTTSOptions) {
+export function useDiscussionTTS({
+  enabled,
+  agents,
+  beforePlayback,
+  onAudioStateChange,
+}: DiscussionTTSOptions) {
   const { locale, t } = useI18n();
   // The tts slot's provider (the only one the server synthesizes with) and
   // the user's voice for it.
@@ -77,6 +83,9 @@ export function useDiscussionTTS({ enabled, agents, onAudioStateChange }: Discus
   const agentVoiceOverrides = useSettingsStore((s) => s.agentVoiceOverrides);
   const { profiles: voiceProfiles } = useAllVoiceProfiles();
 
+  const beforePlaybackRef = useRef(beforePlayback);
+  beforePlaybackRef.current = beforePlayback;
+  const resumeGenerationRef = useRef(0);
   const queueRef = useRef<QueueItem[]>([]);
   const isPlayingRef = useRef(false);
   const currentItemRef = useRef<QueueItem | null>(null);
@@ -311,6 +320,17 @@ export function useDiscussionTTS({ enabled, agents, onAudioStateChange }: Discus
     isPlayingRef.current = true;
     const item = queueRef.current.shift()!;
     currentItemRef.current = item;
+    if (beforePlaybackRef.current) {
+      const silent = await beforePlaybackRef.current();
+      if (currentItemRef.current !== item) return;
+      if (!silent || pausedRef.current) {
+        queueRef.current.unshift(item);
+        currentItemRef.current = null;
+        isPlayingRef.current = false;
+        pausedRef.current = true;
+        return;
+      }
+    }
 
     // Browser TTS
     if (item.providerId === 'browser-native-tts') {
@@ -487,6 +507,7 @@ export function useDiscussionTTS({ enabled, agents, onAudioStateChange }: Discus
   );
 
   const cleanup = useCallback(() => {
+    resumeGenerationRef.current++;
     pausedRef.current = false;
     currentProviderRef.current = null;
     currentItemRef.current = null;
@@ -512,6 +533,7 @@ export function useDiscussionTTS({ enabled, agents, onAudioStateChange }: Discus
 
   /** Pause TTS audio (browser-native or server). Does NOT stop the SSE stream. */
   const pause = useCallback(() => {
+    resumeGenerationRef.current++;
     if (pausedRef.current) return;
     pausedRef.current = true;
     if (currentProviderRef.current === 'browser-native-tts') {
@@ -523,22 +545,28 @@ export function useDiscussionTTS({ enabled, agents, onAudioStateChange }: Discus
 
   /** Resume TTS audio. If the previous utterance already ended while paused, advance the queue. */
   const resume = useCallback(() => {
-    if (!pausedRef.current) return;
-    pausedRef.current = false;
-    if (currentProviderRef.current === 'browser-native-tts') {
-      browserResumeRef.current();
-    } else if (audioRef.current && audioRef.current.paused) {
-      const audio = audioRef.current;
-      // Take this line's own finish closure: it carries the line's token, so a
-      // rejection that arrives after another line took the element cannot finish
-      // the line that is playing now.
-      const lineFinish = finishAudioRef.current;
-      void audio.play().catch(() => lineFinish?.());
-    } else if (!isPlayingRef.current) {
-      // Audio finished while paused — kick-start the queue
-      processQueueRef.current();
+    if (!pausedRef.current) return true;
+    const generation = resumeGenerationRef.current;
+    const resumeAudio = () => {
+      if (generation !== resumeGenerationRef.current) return false;
+      pausedRef.current = false;
+      if (currentProviderRef.current === 'browser-native-tts') {
+        browserResumeRef.current();
+      } else if (audioRef.current && audioRef.current.paused) {
+        const audio = audioRef.current;
+        // Keep this line's finish token if its play rejects after a scene change.
+        const lineFinish = finishAudioRef.current;
+        void audio.play().catch(() => lineFinish?.());
+      } else if (!isPlayingRef.current) {
+        processQueueRef.current();
+      }
+      prefetchNextRef.current();
+      return true;
+    };
+    if (beforePlaybackRef.current) {
+      return beforePlaybackRef.current().then((silent) => silent && resumeAudio());
     }
-    prefetchNextRef.current();
+    return resumeAudio();
   }, []);
 
   // Sync playbackSpeed to currently playing audio in real-time

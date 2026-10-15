@@ -17,10 +17,11 @@ const mocks = vi.hoisted(() => ({
   piEnabled: true,
   coursewareReferenceEnabled: true,
   topicActive: false,
-  engineMode: 'idle' as 'idle' | 'playing' | 'paused',
+  engineMode: 'idle' as 'idle' | 'playing' | 'paused' | 'live',
   engineOptions: undefined as
     | {
-        onModeChange?: (mode: 'idle' | 'playing' | 'paused') => void;
+        beforeSpeech?: () => Promise<boolean>;
+        onModeChange?: (mode: 'idle' | 'playing' | 'paused' | 'live') => void;
         onProgress?: (snapshot: { actionIndex: number; sceneId: string }) => void;
         onUserInterrupt?: (text: string) => void;
         onComplete?: () => void;
@@ -29,6 +30,10 @@ const mocks = vi.hoisted(() => ({
   startLecture: vi.fn(),
   endSession: vi.fn(),
   engineStop: vi.fn(),
+  enginePause: vi.fn(),
+  pauseActiveLiveBuffer: vi.fn(),
+  discussionPause: vi.fn(),
+  sendFrameMessage: vi.fn(),
   engineStart: vi.fn(),
   engineContinuePlayback: vi.fn(),
   handleUserInterrupt: vi.fn(),
@@ -264,7 +269,7 @@ vi.mock('@/components/chat/chat-area', async () => {
         startDiscussion: vi.fn(),
         switchToTab: vi.fn(),
         resumeActiveLiveBuffer: vi.fn(),
-        pauseActiveLiveBuffer: vi.fn(),
+        pauseActiveLiveBuffer: mocks.pauseActiveLiveBuffer,
         stopActiveSession: vi.fn(),
         continueActiveSoftClosingSession: vi.fn(),
         getActiveSessionType: vi.fn(),
@@ -284,7 +289,8 @@ vi.mock('@/lib/playback', () => ({
       _actionEngine: unknown,
       _audioPlayer: unknown,
       options: {
-        onModeChange?: (mode: 'idle' | 'playing' | 'paused') => void;
+        beforeSpeech?: () => Promise<boolean>;
+        onModeChange?: (mode: 'idle' | 'playing' | 'paused' | 'live') => void;
         onUserInterrupt?: (text: string) => void;
         onComplete?: () => void;
       },
@@ -317,7 +323,9 @@ vi.mock('@/lib/playback', () => ({
     continuePlayback() {
       mocks.engineContinuePlayback();
     }
-    pause() {}
+    pause() {
+      mocks.enginePause();
+    }
     confirmDiscussion() {}
     skipDiscussion() {}
   },
@@ -352,14 +360,19 @@ vi.mock('@/lib/utils/audio-player', () => ({
 vi.mock('@/lib/hooks/use-discussion-tts', () => ({
   useDiscussionTTS: () => ({
     cleanup: vi.fn(),
-    pause: vi.fn(),
+    pause: mocks.discussionPause,
     resume: vi.fn(),
     handleSegmentSealed: vi.fn(),
     shouldHold: vi.fn(() => false),
   }),
 }));
 vi.mock('@/lib/store/widget-iframe', () => ({
-  useWidgetIframeStore: { getState: () => ({ getSendMessage: () => undefined }) },
+  useWidgetIframeStore: {
+    getState: () => ({
+      getSendMessage: () => undefined,
+      sendMessageByScene: { 'scene-1': mocks.sendFrameMessage },
+    }),
+  },
 }));
 vi.mock('@/lib/orchestration/registry/store', () => ({
   agentsToParticipants: () => [],
@@ -401,6 +414,10 @@ describe('PlaybackChromeRoot element-reference ownership', () => {
     mocks.endSession.mockReset();
     mocks.endSession.mockResolvedValue(undefined);
     mocks.engineStop.mockReset();
+    mocks.enginePause.mockReset();
+    mocks.pauseActiveLiveBuffer.mockReset();
+    mocks.discussionPause.mockReset();
+    mocks.sendFrameMessage.mockReset();
     mocks.engineStart.mockReset();
     mocks.engineContinuePlayback.mockReset();
     mocks.handleUserInterrupt.mockReset();
@@ -741,6 +758,31 @@ describe('PlaybackChromeRoot element-reference ownership', () => {
     click('send');
     expect(mocks.sendMessage).toHaveBeenCalledOnce();
     expect(mocks.sendMessage).toHaveBeenCalledWith('Explain this', undefined);
+  });
+
+  it('pauses narration and the live speech buffer when iframe media starts', async () => {
+    mocks.engineMode = 'playing';
+    mocks.pauseActiveLiveBuffer.mockReturnValue(true);
+    const ownerRef = createRef<PlaybackChromeRootHandle>();
+    await renderOwner({ ref: ownerRef });
+    await mocks.engineOptions?.beforeSpeech?.();
+    expect(mocks.sendFrameMessage).toHaveBeenCalledWith('maic:media:control:v1', {});
+    act(() => ownerRef.current?.pauseForInteractiveMedia());
+    expect(mocks.enginePause).toHaveBeenCalledOnce();
+    expect(mocks.pauseActiveLiveBuffer).toHaveBeenCalledOnce();
+    expect(mocks.discussionPause).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the engine live while pausing and resuming discussion media', async () => {
+    mocks.engineMode = 'live';
+    mocks.pauseActiveLiveBuffer.mockReturnValue(true);
+    const ownerRef = createRef<PlaybackChromeRootHandle>();
+    await renderOwner({ ref: ownerRef });
+    act(() => ownerRef.current?.pauseForInteractiveMedia());
+    expect(mocks.enginePause).not.toHaveBeenCalled();
+    expect(mocks.discussionPause).toHaveBeenCalledOnce();
+    await act(async () => (mocks.roundtableProps?.onDiscussionResume as () => Promise<void>)());
+    expect(mocks.engineMode).toBe('live');
   });
 
   it('owns an Interactive identity delivered through the Stage sibling seam', async () => {

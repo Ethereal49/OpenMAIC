@@ -152,6 +152,7 @@ const teacher = {
 let root: Root;
 let hook: ReturnType<typeof useDiscussionTTS>;
 let enabled: boolean;
+let beforePlayback: (() => Promise<boolean>) | undefined;
 let agents: AgentConfig[];
 const stateChange = vi.fn();
 const requests: Array<{
@@ -161,7 +162,12 @@ const requests: Array<{
 }> = [];
 
 function Probe() {
-  const result = useDiscussionTTS({ enabled, agents, onAudioStateChange: stateChange });
+  const result = useDiscussionTTS({
+    enabled,
+    agents,
+    beforePlayback,
+    onAudioStateChange: stateChange,
+  });
   useEffect(() => {
     hook = result;
   });
@@ -189,6 +195,7 @@ beforeEach(() => {
   requests.length = 0;
   FakeAudio.instances = [];
   enabled = true;
+  beforePlayback = undefined;
   agents = [teacher];
   vi.stubGlobal('Audio', FakeAudio);
   vi.stubGlobal(
@@ -214,6 +221,32 @@ afterEach(() => {
 });
 
 describe('discussion TTS synthesis lookahead', () => {
+  it('waits for iframe silence before starting and resuming discussion audio', async () => {
+    const first = deferred<boolean>();
+    beforePlayback = () => first.promise;
+    await act(async () => root.render(createElement(Probe)));
+    await seal('A');
+    expect(requests).toHaveLength(0);
+    await act(async () => first.resolve(true));
+    await respond(0);
+    const audio = FakeAudio.instances[0];
+    expect(audio.paused).toBe(false);
+    act(() => hook.pause());
+    const next = deferred<boolean>();
+    beforePlayback = () => next.promise;
+    await act(async () => root.render(createElement(Probe)));
+    let resumed!: Promise<boolean>;
+    act(() => {
+      resumed = Promise.resolve(hook.resume());
+    });
+    expect(audio.paused).toBe(true);
+    await act(async () => {
+      next.resolve(true);
+      await resumed;
+    });
+    expect(audio.paused).toBe(false);
+  });
+
   it('requests B during A playback and consumes the prepared result exactly once', async () => {
     await seal('A');
     await seal('B');
@@ -423,6 +456,7 @@ describe('discussion TTS synthesis lookahead', () => {
     await respond(1); // A cancelled prefetch must never be consumed.
     mocks.settings.ttsMuted = false;
     enabled = true;
+    beforePlayback = undefined;
     await act(async () => root.render(createElement(Probe)));
     expect(audio.volume).toBe(0.7);
     expect(audio.play).toHaveBeenCalledOnce();
@@ -453,6 +487,7 @@ describe('discussion TTS synthesis lookahead', () => {
     expect(FakeAudio.instances[0].volume).toBe(0);
     mocks.settings.ttsMuted = false;
     enabled = true;
+    beforePlayback = undefined;
     act(() => root.render(createElement(Probe)));
     expect(FakeAudio.instances[0].volume).toBe(0.7);
     expect(FakeAudio.instances[0].play).toHaveBeenCalledOnce();

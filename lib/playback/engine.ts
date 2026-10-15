@@ -262,7 +262,7 @@ export class PlaybackEngine {
   }
 
   /** paused → playing (TTS resume) | paused (in discussion) → live */
-  resume(): void {
+  async resume(): Promise<void> {
     if (this.mode !== 'paused') {
       log.warn('Cannot resume: not paused, mode is', this.mode);
       return;
@@ -278,6 +278,15 @@ export class PlaybackEngine {
     } else {
       // Resume lecture
       this.setMode('playing');
+      const generation = this.playbackGeneration;
+      if (this.callbacks.beforeSpeech) {
+        const silent = await this.callbacks.beforeSpeech();
+        if (this.getMode() !== 'playing' || !this.isCurrentGeneration(generation)) return;
+        if (!silent) {
+          this.pause();
+          return;
+        }
+      }
       if (this.browserTTSPausedChunks.length > 0) {
         // Browser TTS was paused via cancel — re-speak remaining chunks
         this.browserTTSActive = true;
@@ -598,6 +607,15 @@ export class PlaybackEngine {
         if (cue.type === 'spotlight' || cue.type === 'laser') this.fireVisualCue(cue);
       }
       if (this.mode !== 'playing' || !this.isCurrentGeneration(generation)) return;
+    }
+
+    if (action.type === 'speech' && this.callbacks.beforeSpeech) {
+      const silent = await this.callbacks.beforeSpeech();
+      if (this.mode !== 'playing' || !this.isCurrentGeneration(generation)) return;
+      if (!silent) {
+        this.pause();
+        return;
+      }
     }
 
     // Notify progress BEFORE advancing the cursor so the snapshot points at
