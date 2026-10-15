@@ -41,12 +41,16 @@ export function usePlayback(
       scenes,
       navigate: (next) => navigateRef.current(next),
       ports: {
-        playAudio: (ref, control) => {
-          const silence = widgets.pauseMedia();
-          if (silence === true) return narration.play(ref, control);
-          return silence.then((silent) =>
-            silent && !control.signal.aborted ? narration.play(ref, control) : false,
-          );
+        playAudio: async (ref, control) => {
+          while (!control.signal.aborted) {
+            const silence = widgets.pauseMedia();
+            const silent = silence === true || (await silence);
+            if (control.signal.aborted) return false;
+            if (silent) return narration.play(ref, control);
+            controller.pause();
+            await control.gate.whenOpen(control.signal);
+          }
+          return false;
         },
         playVideo: (elementId, control) => videos.play(elementId, control),
         sendWidgetMessage: (type, payload) => widgets.send(type, payload),

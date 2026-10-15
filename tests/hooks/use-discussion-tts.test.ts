@@ -155,6 +155,7 @@ let enabled: boolean;
 let beforePlayback: (() => Promise<boolean>) | undefined;
 let agents: AgentConfig[];
 const stateChange = vi.fn();
+const playbackBlocked = vi.fn();
 const requests: Array<{
   body: Record<string, unknown>;
   signal: AbortSignal;
@@ -166,6 +167,7 @@ function Probe() {
     enabled,
     agents,
     beforePlayback,
+    onPlaybackBlocked: playbackBlocked,
     onAudioStateChange: stateChange,
   });
   useEffect(() => {
@@ -221,6 +223,44 @@ afterEach(() => {
 });
 
 describe('discussion TTS synthesis lookahead', () => {
+  it('reports a blocked first segment and retries it with one silence check on resume', async () => {
+    const guard = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    beforePlayback = guard;
+    await act(async () => root.render(createElement(Probe)));
+    await seal('A');
+    expect(playbackBlocked).toHaveBeenCalledOnce();
+    expect(requests).toHaveLength(0);
+    expect(hook.shouldHold()).toEqual({ holding: true, segmentDone: 0 });
+    await act(async () => expect(await hook.resume()).toBe(true));
+    expect(guard).toHaveBeenCalledTimes(2);
+    expect(requests.map((r) => r.body.audioId)).toEqual(['A']);
+    await respond(0);
+    expect(FakeAudio.instances[0].paused).toBe(false);
+  });
+
+  it('reports a failed resume without losing the current discussion audio', async () => {
+    beforePlayback = vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    await act(async () => root.render(createElement(Probe)));
+    await seal('A');
+    await respond(0);
+    act(() => hook.pause());
+    await act(async () => expect(await hook.resume()).toBe(false));
+    expect(playbackBlocked).toHaveBeenCalledOnce();
+    expect(FakeAudio.instances[0].paused).toBe(true);
+    expect(hook.shouldHold()).toEqual({ holding: true, segmentDone: 0 });
+  });
+
+  it('does not report a stale failed guard after cleanup', async () => {
+    const guard = deferred<boolean>();
+    beforePlayback = () => guard.promise;
+    await act(async () => root.render(createElement(Probe)));
+    await seal('A');
+    act(() => hook.cleanup());
+    await act(async () => guard.resolve(false));
+    expect(playbackBlocked).not.toHaveBeenCalled();
+    expect(hook.shouldHold().holding).toBe(false);
+  });
+
   it('waits for iframe silence before starting and resuming discussion audio', async () => {
     const first = deferred<boolean>();
     beforePlayback = () => first.promise;

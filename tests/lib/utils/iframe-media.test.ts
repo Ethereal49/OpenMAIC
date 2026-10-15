@@ -7,6 +7,7 @@ import {
   MEDIA_CONTROL,
 } from '@/lib/interactive/media-bridge';
 import { patchHtmlForIframe } from '@/lib/utils/iframe';
+import { runInNewContext } from 'node:vm';
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -26,6 +27,115 @@ function fixture() {
   return { frame, played, post, session, message };
 }
 const playing = { type: 'maic:media:state:v1', documentId: 'current', requestId: 0, playing: true };
+
+function bridgeFixture() {
+  const sets: Set<unknown>[] = [];
+  class TrackedSet extends Set<unknown> {
+    constructor() {
+      super();
+      sets.push(this);
+    }
+  }
+  class Media extends EventTarget {
+    paused = true;
+    ended = false;
+    error: { code: number } | null = null;
+    playError: 'reject' | 'throw' | null = null;
+    play(): Promise<void> {
+      if (this.playError === 'throw') throw new Error('invalid playback');
+      if (this.playError === 'reject') return Promise.reject(new Error('refused'));
+      this.paused = false;
+      this.ended = false;
+      this.dispatchEvent(new Event('play'));
+      return Promise.resolve();
+    }
+    pause() {
+      this.paused = true;
+      this.dispatchEvent(new Event('pause'));
+    }
+  }
+  const frameWindow = new EventTarget() as EventTarget & {
+    parent: { postMessage: ReturnType<typeof vi.fn> };
+  };
+  frameWindow.parent = { postMessage: vi.fn() };
+  const script = mediaBridgeScript('test').replace(/^<script[^>]*>|<\/script>$/g, '');
+  const frameDocument = new EventTarget();
+  const nativePlay = vi.spyOn(frameDocument, 'addEventListener');
+  runInNewContext(script, {
+    window: frameWindow,
+    document: frameDocument,
+    HTMLMediaElement: Media,
+    Set: TrackedSet,
+  });
+  return {
+    Media,
+    media: sets[0],
+    frameWindow,
+    nativePlay: (element: Media) =>
+      (nativePlay.mock.calls[0][1] as EventListener)({ target: element } as unknown as Event),
+  };
+}
+
+describe('injected media lifetime', () => {
+  it('releases errored media even when paused is false and ignores its stale play event', async () => {
+    const { Media, media, nativePlay, frameWindow } = bridgeFixture();
+    const element = new Media();
+    await element.play();
+    element.error = { code: 3 };
+    element.dispatchEvent(new Event('error'));
+    expect(media.size).toBe(0);
+    nativePlay(element);
+    expect(media.size).toBe(0);
+    expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ playing: false }),
+      '*',
+    );
+  });
+  it.each(['pause', 'ended', 'emptied', 'error'])(
+    'releases detached audio after %s and observes reuse',
+    async (type) => {
+      const { Media, media, frameWindow } = bridgeFixture();
+      let reused!: InstanceType<typeof Media>;
+      for (let i = 0; i < 100; i++) {
+        reused = new Media();
+        await reused.play();
+        expect(media.size).toBe(1);
+        reused.paused = true;
+        reused.dispatchEvent(new Event(type));
+        expect(media.size).toBe(0);
+      }
+      await reused.play();
+      expect(media.size).toBe(1);
+      expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ playing: true }),
+        '*',
+      );
+      frameWindow.dispatchEvent(
+        new MessageEvent('message', {
+          source: frameWindow.parent as unknown as Window,
+          data: { type: MEDIA_CONTROL, documentId: 'test', action: 'sync', enabled: false },
+        }),
+      );
+      expect(reused.paused).toBe(true);
+      expect(media.size).toBe(0);
+    },
+  );
+
+  it.each(['reject', 'throw'] as const)(
+    'releases an unsuccessful play attempt (%s)',
+    async (failure) => {
+      const { Media, media } = bridgeFixture();
+      const element = new Media();
+      element.playError = failure;
+      try {
+        await element.play();
+      } catch {
+        /* The authored caller owns the error. */
+      }
+      expect(media.size).toBe(0);
+    },
+  );
+});
 
 describe('interactive media boundary', () => {
   it('installs before authored scripts only for live playback consumers', () => {

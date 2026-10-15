@@ -25,19 +25,41 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
     if (!enabled) pause();
     report();
   }
+  function release(element) {
+    if (!element.paused && !element.ended && !element.error) return;
+    media.delete(element);
+    element.removeEventListener('play', changed);
+    ['pause', 'ended', 'emptied', 'error'].forEach(function (type) {
+      element.removeEventListener(type, stopped);
+    });
+  }
+  function stopped(event) {
+    release(event.target);
+    changed();
+  }
   function watch(element) {
     if (media.has(element)) return;
     media.add(element);
-    ['play', 'pause', 'ended', 'emptied'].forEach(function (type) {
-      element.addEventListener(type, changed);
+    element.addEventListener('play', changed);
+    ['pause', 'ended', 'emptied', 'error'].forEach(function (type) {
+      element.addEventListener(type, stopped);
     });
   }
   // Native/autoplay starts and detached new Audio() elements both participate.
   document.addEventListener('play', function (event) {
-    if (event.target instanceof HTMLMediaElement) { watch(event.target); changed(); }
+    if (event.target instanceof HTMLMediaElement) {
+      if (!event.target.paused && !event.target.ended && !event.target.error) watch(event.target);
+      changed();
+    }
   }, true);
   var play = HTMLMediaElement.prototype.play;
-  HTMLMediaElement.prototype.play = function () { watch(this); return play.call(this); };
+  HTMLMediaElement.prototype.play = function () {
+    var element = this;
+    watch(element);
+    function failed(error) { release(element); changed(); throw error; }
+    try { return play.call(element).catch(failed); }
+    catch (error) { return failed(error); }
+  };
   ['AudioContext', 'webkitAudioContext'].forEach(function (name) {
     var Native = window[name];
     if (!Native) return;

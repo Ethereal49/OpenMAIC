@@ -35,6 +35,7 @@ interface DiscussionTTSOptions {
   enabled: boolean;
   agents: AgentConfig[];
   beforePlayback?: () => Promise<boolean>;
+  onPlaybackBlocked?: () => void;
   onAudioStateChange?: (agentId: string | null, state: AudioIndicatorState) => void;
 }
 
@@ -60,6 +61,7 @@ export function useDiscussionTTS({
   enabled,
   agents,
   beforePlayback,
+  onPlaybackBlocked,
   onAudioStateChange,
 }: DiscussionTTSOptions) {
   const { locale, t } = useI18n();
@@ -85,6 +87,8 @@ export function useDiscussionTTS({
 
   const beforePlaybackRef = useRef(beforePlayback);
   beforePlaybackRef.current = beforePlayback;
+  const onPlaybackBlockedRef = useRef(onPlaybackBlocked);
+  onPlaybackBlockedRef.current = onPlaybackBlocked;
   const resumeGenerationRef = useRef(0);
   const queueRef = useRef<QueueItem[]>([]);
   const isPlayingRef = useRef(false);
@@ -107,7 +111,7 @@ export function useDiscussionTTS({
   const playbackTokenRef = useRef(0);
   const onAudioStateChangeRef = useRef(onAudioStateChange);
   onAudioStateChangeRef.current = onAudioStateChange;
-  const processQueueRef = useRef<() => void>(() => {});
+  const processQueueRef = useRef<(silenceConfirmed?: boolean) => void>(() => {});
   const agentBindingKeysRef = useRef(new Map<string, string>());
 
   const {
@@ -309,145 +313,149 @@ export function useDiscussionTTS({
   }, [enabled, ttsMuted, generateAudio]);
   prefetchNextRef.current = prefetchNext;
 
-  const processQueue = useCallback(async () => {
-    if (pausedRef.current) return; // Don't advance while paused
-    if (isPlayingRef.current || queueRef.current.length === 0) return;
-    if (!enabled || ttsMuted) {
-      queueRef.current = [];
-      return;
-    }
-
-    isPlayingRef.current = true;
-    const item = queueRef.current.shift()!;
-    currentItemRef.current = item;
-    if (beforePlaybackRef.current) {
-      const silent = await beforePlaybackRef.current();
-      if (currentItemRef.current !== item) return;
-      if (!silent || pausedRef.current) {
-        queueRef.current.unshift(item);
-        currentItemRef.current = null;
-        isPlayingRef.current = false;
-        pausedRef.current = true;
+  const processQueue = useCallback(
+    async (silenceConfirmed?: boolean) => {
+      if (pausedRef.current) return; // Don't advance while paused
+      if (isPlayingRef.current || queueRef.current.length === 0) return;
+      if (!enabled || ttsMuted) {
+        queueRef.current = [];
         return;
       }
-    }
 
-    // Browser TTS
-    if (item.providerId === 'browser-native-tts') {
+      isPlayingRef.current = true;
+      const item = queueRef.current.shift()!;
+      currentItemRef.current = item;
+      if (beforePlaybackRef.current && !silenceConfirmed) {
+        const silent = await beforePlaybackRef.current();
+        if (currentItemRef.current !== item) return;
+        if (!silent || pausedRef.current) {
+          queueRef.current.unshift(item);
+          currentItemRef.current = null;
+          isPlayingRef.current = false;
+          pausedRef.current = true;
+          if (!silent) onPlaybackBlockedRef.current?.();
+          return;
+        }
+      }
+
+      // Browser TTS
+      if (item.providerId === 'browser-native-tts') {
+        currentProviderRef.current = item.providerId;
+        onAudioStateChangeRef.current?.(item.agentId, 'playing');
+        browserSpeakRef.current(item.text, item.voiceId);
+        prefetchNextRef.current();
+        return;
+      }
+
+      // Server TTS — use the item's provider, not the global one
       currentProviderRef.current = item.providerId;
-      onAudioStateChangeRef.current?.(item.agentId, 'playing');
-      browserSpeakRef.current(item.text, item.voiceId);
-      prefetchNextRef.current();
-      return;
-    }
+      onAudioStateChangeRef.current?.(item.agentId, 'generating');
+      const prefetched = prefetchedRef.current;
+      const controller = prefetched?.item === item ? prefetched.controller : new AbortController();
+      if (prefetched?.item === item) prefetchedRef.current = null;
+      abortControllerRef.current = controller;
 
-    // Server TTS — use the item's provider, not the global one
-    currentProviderRef.current = item.providerId;
-    onAudioStateChangeRef.current?.(item.agentId, 'generating');
-    const prefetched = prefetchedRef.current;
-    const controller = prefetched?.item === item ? prefetched.controller : new AbortController();
-    if (prefetched?.item === item) prefetchedRef.current = null;
-    abortControllerRef.current = controller;
+      try {
+        const result =
+          prefetched?.item === item
+            ? await prefetched.result
+            : await generateAudio(item, controller).then(
+                (audioUrl) => ({ audioUrl }),
+                (error: unknown) => ({ error }),
+              );
+        if (controller.signal.aborted || currentItemRef.current !== item) return;
+        if ('error' in result) throw result.error;
+        abortControllerRef.current = null;
+        const audioUrl = result.audioUrl;
+        // Reuse this playback module's element rather than creating one per line:
+        // a fresh element's programmatic play() is what mobile autoplay policies
+        // refuse, which left the discussion silent from the second line on.
+        const audio = getDiscussionAudioElement();
+        const token = ++playbackTokenRef.current;
+        audio.src = audioUrl;
+        const settings = playbackSettingsRef.current;
+        audio.defaultPlaybackRate = settings.playbackSpeed;
+        audio.playbackRate = settings.playbackSpeed;
+        audio.volume = settings.ttsMuted ? 0 : settings.ttsVolume;
+        audioRef.current = audio;
+        const finish = () => {
+          if (token !== playbackTokenRef.current) return;
+          audioRef.current = null;
+          finishAudioRef.current = null;
+          currentItemRef.current = null;
+          currentProviderRef.current = null;
+          releaseDiscussionAudioLine(audio);
+          isPlayingRef.current = false;
+          segmentDoneCounterRef.current++;
+          onAudioStateChangeRef.current?.(item.agentId, 'idle');
+          if (!pausedRef.current) {
+            queueMicrotask(() => processQueueRef.current());
+          }
+        };
+        finishAudioRef.current = finish;
+        // Assignment rather than addEventListener: the element is reused, so a
+        // listener would otherwise accumulate once per line and fire this callback
+        // several times for one line.
+        audio.onended = finish;
+        audio.onerror = finish;
 
-    try {
-      const result =
-        prefetched?.item === item
-          ? await prefetched.result
-          : await generateAudio(item, controller).then(
-              (audioUrl) => ({ audioUrl }),
-              (error: unknown) => ({ error }),
-            );
-      if (controller.signal.aborted || currentItemRef.current !== item) return;
-      if ('error' in result) throw result.error;
-      abortControllerRef.current = null;
-      const audioUrl = result.audioUrl;
-      // Reuse this playback module's element rather than creating one per line:
-      // a fresh element's programmatic play() is what mobile autoplay policies
-      // refuse, which left the discussion silent from the second line on.
-      const audio = getDiscussionAudioElement();
-      const token = ++playbackTokenRef.current;
-      audio.src = audioUrl;
-      const settings = playbackSettingsRef.current;
-      audio.defaultPlaybackRate = settings.playbackSpeed;
-      audio.playbackRate = settings.playbackSpeed;
-      audio.volume = settings.ttsMuted ? 0 : settings.ttsVolume;
-      audioRef.current = audio;
-      const finish = () => {
-        if (token !== playbackTokenRef.current) return;
+        // If paused during TTS generation, keep audio ready but don't play
+        if (pausedRef.current) {
+          onAudioStateChangeRef.current?.(item.agentId, 'playing');
+          audio.pause();
+          return;
+        }
+
+        onAudioStateChangeRef.current?.(item.agentId, 'playing');
+        await audio.play();
+        // Identity no longer distinguishes lines (one element), so the token does.
+        if (token === playbackTokenRef.current) prefetchNextRef.current();
+      } catch (err) {
+        if (controller.signal.aborted || currentItemRef.current !== item) return;
+        if (finishAudioRef.current) {
+          finishAudioRef.current();
+          return;
+        }
+        abortControllerRef.current = null;
+        const cloneUnavailable =
+          err &&
+          typeof err === 'object' &&
+          (err as { errorCode?: unknown }).errorCode === 'QWEN_VC_VOICE_NOT_FOUND' &&
+          item.agentId &&
+          item.fallbackVoice;
+        if (cloneUnavailable) {
+          const unavailableKey = markVoiceBindingUnavailable({
+            providerId: item.providerId,
+            voiceId: item.voiceId,
+          });
+          if (markVoiceBindingNoticeShown(unavailableKey)) {
+            toast.warning(t('settings.qwenCloneDiscussionUnavailable'));
+          }
+          queueRef.current.unshift({
+            ...item,
+            providerId: item.fallbackVoice!.providerId,
+            modelId: item.fallbackVoice!.modelId,
+            voiceId: item.fallbackVoice!.voiceId,
+            fallbackVoice: undefined,
+          });
+        }
+        if ((err as Error).name !== 'AbortError') {
+          console.error('[DiscussionTTS] TTS generation failed:', err);
+        }
         audioRef.current = null;
-        finishAudioRef.current = null;
         currentItemRef.current = null;
         currentProviderRef.current = null;
-        releaseDiscussionAudioLine(audio);
         isPlayingRef.current = false;
-        segmentDoneCounterRef.current++;
+        // Retrying a missing clone is still the same speech segment.
+        if (!cloneUnavailable) segmentDoneCounterRef.current++;
         onAudioStateChangeRef.current?.(item.agentId, 'idle');
         if (!pausedRef.current) {
           queueMicrotask(() => processQueueRef.current());
         }
-      };
-      finishAudioRef.current = finish;
-      // Assignment rather than addEventListener: the element is reused, so a
-      // listener would otherwise accumulate once per line and fire this callback
-      // several times for one line.
-      audio.onended = finish;
-      audio.onerror = finish;
-
-      // If paused during TTS generation, keep audio ready but don't play
-      if (pausedRef.current) {
-        onAudioStateChangeRef.current?.(item.agentId, 'playing');
-        audio.pause();
-        return;
       }
-
-      onAudioStateChangeRef.current?.(item.agentId, 'playing');
-      await audio.play();
-      // Identity no longer distinguishes lines (one element), so the token does.
-      if (token === playbackTokenRef.current) prefetchNextRef.current();
-    } catch (err) {
-      if (controller.signal.aborted || currentItemRef.current !== item) return;
-      if (finishAudioRef.current) {
-        finishAudioRef.current();
-        return;
-      }
-      abortControllerRef.current = null;
-      const cloneUnavailable =
-        err &&
-        typeof err === 'object' &&
-        (err as { errorCode?: unknown }).errorCode === 'QWEN_VC_VOICE_NOT_FOUND' &&
-        item.agentId &&
-        item.fallbackVoice;
-      if (cloneUnavailable) {
-        const unavailableKey = markVoiceBindingUnavailable({
-          providerId: item.providerId,
-          voiceId: item.voiceId,
-        });
-        if (markVoiceBindingNoticeShown(unavailableKey)) {
-          toast.warning(t('settings.qwenCloneDiscussionUnavailable'));
-        }
-        queueRef.current.unshift({
-          ...item,
-          providerId: item.fallbackVoice!.providerId,
-          modelId: item.fallbackVoice!.modelId,
-          voiceId: item.fallbackVoice!.voiceId,
-          fallbackVoice: undefined,
-        });
-      }
-      if ((err as Error).name !== 'AbortError') {
-        console.error('[DiscussionTTS] TTS generation failed:', err);
-      }
-      audioRef.current = null;
-      currentItemRef.current = null;
-      currentProviderRef.current = null;
-      isPlayingRef.current = false;
-      // Retrying a missing clone is still the same speech segment.
-      if (!cloneUnavailable) segmentDoneCounterRef.current++;
-      onAudioStateChangeRef.current?.(item.agentId, 'idle');
-      if (!pausedRef.current) {
-        queueMicrotask(() => processQueueRef.current());
-      }
-    }
-  }, [enabled, t, ttsMuted, generateAudio]);
+    },
+    [enabled, t, ttsMuted, generateAudio],
+  );
 
   processQueueRef.current = processQueue;
 
@@ -558,13 +566,20 @@ export function useDiscussionTTS({
         const lineFinish = finishAudioRef.current;
         void audio.play().catch(() => lineFinish?.());
       } else if (!isPlayingRef.current) {
-        processQueueRef.current();
+        processQueueRef.current(true);
       }
       prefetchNextRef.current();
       return true;
     };
     if (beforePlaybackRef.current) {
-      return beforePlaybackRef.current().then((silent) => silent && resumeAudio());
+      return beforePlaybackRef.current().then((silent) => {
+        if (generation !== resumeGenerationRef.current) return false;
+        if (!silent) {
+          onPlaybackBlockedRef.current?.();
+          return false;
+        }
+        return resumeAudio();
+      });
     }
     return resumeAudio();
   }, []);

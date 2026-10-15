@@ -45,6 +45,8 @@ function wav(): string {
   return `data:audio/wav;base64,${bytes.toString('base64')}`;
 }
 const audio = wav();
+// Model a temporarily unresponsive frame before its bridge receives commands.
+const dropControls = `<script>const add=window.addEventListener;window.addEventListener=function(type,listener,options){if(type==='message'){add.call(this,type,function(event){if(!window.blockMediaControls||event.data?.type!=='maic:media:control:v1')listener.call(this,event)},options);window.addEventListener=add}else add.call(this,type,listener,options)};</script>`;
 const activity = `<button id="audio" onclick="document.querySelector('audio').play()">Frame audio</button><audio id="a" src="${audio}" loop></audio>
 <button id="video" onclick="document.querySelector('video').play()">Frame video</button><video id="v" src="${audio}" loop></video>
 <button id="detached" onclick="detached.play()">Detached audio</button>
@@ -65,14 +67,14 @@ import {createRoot} from 'react-dom/client';
 import {patchHtmlForIframe} from './lib/utils/iframe';
 import {createInteractiveMediaSession,mediaDocumentId,MEDIA_CONTROL} from './lib/interactive/media-bridge';
 const NativeAudio=window.Audio;window.audios=[];window.Audio=function(...args){const a=new NativeAudio(...args);window.audios.push(a);return a;};
-const html=${JSON.stringify(patchHtmlForIframe(activity, undefined, 'current'))};
+const html=${JSON.stringify(patchHtmlForIframe(activity, undefined, 'current').replace('<script data-maic-media-document', dropControls + '<script data-maic-media-document'))};
 ${
   surface === 'standalone'
     ? `
 import {usePlayback} from './lib/standalone-player/playback/use-playback';
 import {InteractiveScene} from './lib/standalone-player/scenes/InteractiveScene';
-const scenes=[{type:'interactive',order:0,actions:[{id:'speech',type:'speech',text:'Narration',audioRef:'narration'}],content:{type:'interactive'}},{type:'interactive',order:1,actions:[],content:{type:'interactive'}}];
-function App(){const [index,setIndex]=useState(0);const p=usePlayback(scenes,index,setIndex);window.mode=()=>p.state.mode;
+const scenes=[{type:'interactive',order:0,actions:[{id:'speech',type:'speech',text:'Narration',audioRef:'narration'},{id:'second',type:'speech',text:'Second narration',audioRef:'narration'}],content:{type:'interactive'}},{type:'interactive',order:1,actions:[],content:{type:'interactive'}}];
+function App(){const [index,setIndex]=useState(0);const p=usePlayback(scenes,index,setIndex);window.mode=()=>p.state.mode;window.caption=()=>p.state.view.caption;
 return <><button onClick={p.play}>Narrate</button><button onClick={p.pause}>Pause</button><button onClick={()=>setIndex(index?0:1)}>Navigate</button>{index===0&&<InteractiveScene html={html} strings={{}} title="test" widgets={p.widgets}/>}</>}
 `
     : `
@@ -128,6 +130,37 @@ for (const surface of ['app', 'standalone'] as const) {
       await page.addScriptTag({ content: bundle(surface) });
       await expect(page.frameLocator('iframe').locator('#audio')).toBeVisible();
     });
+
+    if (surface === 'standalone') {
+      test('retains a second narration after a silence timeout and retries it on Play', async ({
+        page,
+      }) => {
+        await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+        await expect
+          .poll(() =>
+            page.evaluate(
+              'Number.isFinite(audios[0].duration) && audios[0].duration > 1 && !audios[0].paused',
+            ),
+          )
+          .toBe(true);
+        const child = page.frames()[1];
+        await child.evaluate(() => {
+          (window as unknown as { blockMediaControls: boolean }).blockMediaControls = true;
+        });
+        // Seed clip completion: the local headless Firefox backend does not emit ended reliably.
+        await page.evaluate('audios[0].pause(); audios[0].dispatchEvent(new Event("ended"))');
+        await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+        expect(await page.evaluate('caption()')).toBe('Second narration');
+        expect(await page.evaluate('narrationPaused()')).toBe(true);
+        await child.evaluate(() => {
+          (window as unknown as { blockMediaControls: boolean }).blockMediaControls = false;
+        });
+        await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+        await expect.poll(() => page.evaluate('narrationPaused()')).toBe(false);
+        expect(await page.evaluate('caption()')).toBe('Second narration');
+        expect(await page.evaluate('mode()')).toBe('playing');
+      });
+    }
 
     for (const media of ['audio', 'video', 'detached', 'context']) {
       test(`${media} pauses narration; resuming narration pauses frame media`, async ({ page }) => {

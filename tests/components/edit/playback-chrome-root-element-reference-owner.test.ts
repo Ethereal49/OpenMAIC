@@ -33,6 +33,9 @@ const mocks = vi.hoisted(() => ({
   enginePause: vi.fn(),
   pauseActiveLiveBuffer: vi.fn(),
   discussionPause: vi.fn(),
+  discussionResume: vi.fn(),
+  discussionOptions: undefined as { onPlaybackBlocked?: () => void } | undefined,
+  resumeActiveLiveBuffer: vi.fn(),
   sendFrameMessage: vi.fn(),
   engineStart: vi.fn(),
   engineContinuePlayback: vi.fn(),
@@ -268,7 +271,7 @@ vi.mock('@/components/chat/chat-area', async () => {
         getLectureMessageId: vi.fn(),
         startDiscussion: vi.fn(),
         switchToTab: vi.fn(),
-        resumeActiveLiveBuffer: vi.fn(),
+        resumeActiveLiveBuffer: mocks.resumeActiveLiveBuffer,
         pauseActiveLiveBuffer: mocks.pauseActiveLiveBuffer,
         stopActiveSession: vi.fn(),
         continueActiveSoftClosingSession: vi.fn(),
@@ -358,13 +361,16 @@ vi.mock('@/lib/utils/audio-player', () => ({
   }),
 }));
 vi.mock('@/lib/hooks/use-discussion-tts', () => ({
-  useDiscussionTTS: () => ({
-    cleanup: vi.fn(),
-    pause: mocks.discussionPause,
-    resume: vi.fn(),
-    handleSegmentSealed: vi.fn(),
-    shouldHold: vi.fn(() => false),
-  }),
+  useDiscussionTTS: (options: typeof mocks.discussionOptions) => {
+    mocks.discussionOptions = options;
+    return {
+      cleanup: vi.fn(),
+      pause: mocks.discussionPause,
+      resume: mocks.discussionResume,
+      handleSegmentSealed: vi.fn(),
+      shouldHold: vi.fn(() => false),
+    };
+  },
 }));
 vi.mock('@/lib/store/widget-iframe', () => ({
   useWidgetIframeStore: {
@@ -417,6 +423,9 @@ describe('PlaybackChromeRoot element-reference ownership', () => {
     mocks.enginePause.mockReset();
     mocks.pauseActiveLiveBuffer.mockReset();
     mocks.discussionPause.mockReset();
+    mocks.discussionResume.mockReset().mockResolvedValue(true);
+    mocks.resumeActiveLiveBuffer.mockReset();
+    mocks.discussionOptions = undefined;
     mocks.sendFrameMessage.mockReset();
     mocks.engineStart.mockReset();
     mocks.engineContinuePlayback.mockReset();
@@ -783,6 +792,32 @@ describe('PlaybackChromeRoot element-reference ownership', () => {
     expect(mocks.discussionPause).toHaveBeenCalledOnce();
     await act(async () => (mocks.roundtableProps?.onDiscussionResume as () => Promise<void>)());
     expect(mocks.engineMode).toBe('live');
+  });
+
+  it('exposes a failed discussion silence check as a paused live buffer with working retry', async () => {
+    mocks.engineMode = 'live';
+    await renderOwner();
+    act(() => mocks.discussionOptions?.onPlaybackBlocked?.());
+    expect(mocks.pauseActiveLiveBuffer).toHaveBeenCalledOnce();
+    expect(mocks.roundtableProps?.isDiscussionPaused).toBe(true);
+    expect(mocks.enginePause).not.toHaveBeenCalled();
+    mocks.discussionResume.mockResolvedValueOnce(false);
+    await act(async () => (mocks.roundtableProps?.onDiscussionResume as () => Promise<void>)());
+    expect(mocks.roundtableProps?.isDiscussionPaused).toBe(true);
+    expect(mocks.resumeActiveLiveBuffer).not.toHaveBeenCalled();
+    await act(async () => (mocks.roundtableProps?.onDiscussionResume as () => Promise<void>)());
+    expect(mocks.resumeActiveLiveBuffer).toHaveBeenCalledOnce();
+    expect(mocks.roundtableProps?.isDiscussionPaused).toBe(false);
+    expect(mocks.engineMode).toBe('live');
+  });
+
+  it('does not mark lecture UI as discussion-paused when no live session was paused', async () => {
+    mocks.engineMode = 'playing';
+    mocks.pauseActiveLiveBuffer.mockReturnValue(false);
+    await renderOwner();
+    act(() => mocks.discussionOptions?.onPlaybackBlocked?.());
+    expect(mocks.roundtableProps?.isDiscussionPaused).toBe(false);
+    expect(mocks.enginePause).not.toHaveBeenCalled();
   });
 
   it('owns an Interactive identity delivered through the Stage sibling seam', async () => {

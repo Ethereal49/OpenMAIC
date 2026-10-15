@@ -283,6 +283,10 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
     }, [currentSceneId]);
     const discussionTTS = useDiscussionTTS({
       beforePlayback: pauseInteractiveMedia,
+      onPlaybackBlocked: () => {
+        if (chatAreaRef.current?.pauseActiveLiveBuffer() || engineRef.current?.getMode() === 'live')
+          setIsDiscussionPaused(true);
+      },
       enabled: ttsEnabled && !ttsMuted,
       agents: selectedAgents,
       onAudioStateChange: (agentId, state) => {
