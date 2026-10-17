@@ -109,6 +109,7 @@ export function useDiscussionTTS({
    * token instead of by which element it came from.
    */
   const playbackTokenRef = useRef(0);
+  const playAttemptRef = useRef(0);
   const onAudioStateChangeRef = useRef(onAudioStateChange);
   onAudioStateChangeRef.current = onAudioStateChange;
   const processQueueRef = useRef<(silenceConfirmed?: boolean) => void>(() => {});
@@ -313,6 +314,19 @@ export function useDiscussionTTS({
   }, [enabled, ttsMuted, generateAudio]);
   prefetchNextRef.current = prefetchNext;
 
+  const playAudio = useCallback(async (audio: HTMLAudioElement, finish: () => void) => {
+    const attempt = ++playAttemptRef.current;
+    try {
+      await audio.play();
+      return attempt === playAttemptRef.current && audioRef.current === audio;
+    } catch (error) {
+      if (attempt !== playAttemptRef.current || audioRef.current !== audio) return false;
+      if (pausedRef.current && (error as Error).name === 'AbortError') return false;
+      finish();
+      return false;
+    }
+  }, []);
+
   const processQueue = useCallback(
     async (silenceConfirmed?: boolean) => {
       if (pausedRef.current) return; // Don't advance while paused
@@ -379,7 +393,7 @@ export function useDiscussionTTS({
         audio.volume = settings.ttsMuted ? 0 : settings.ttsVolume;
         audioRef.current = audio;
         const finish = () => {
-          if (token !== playbackTokenRef.current) return;
+          if (token !== playbackTokenRef.current || currentItemRef.current !== item) return;
           audioRef.current = null;
           finishAudioRef.current = null;
           currentItemRef.current = null;
@@ -407,9 +421,9 @@ export function useDiscussionTTS({
         }
 
         onAudioStateChangeRef.current?.(item.agentId, 'playing');
-        await audio.play();
+        const started = await playAudio(audio, finish);
         // Identity no longer distinguishes lines (one element), so the token does.
-        if (token === playbackTokenRef.current) prefetchNextRef.current();
+        if (started && token === playbackTokenRef.current) prefetchNextRef.current();
       } catch (err) {
         if (controller.signal.aborted || currentItemRef.current !== item) return;
         if (finishAudioRef.current) {
@@ -454,7 +468,7 @@ export function useDiscussionTTS({
         }
       }
     },
-    [enabled, t, ttsMuted, generateAudio],
+    [enabled, t, ttsMuted, generateAudio, playAudio],
   );
 
   processQueueRef.current = processQueue;
@@ -527,6 +541,7 @@ export function useDiscussionTTS({
     // The element outlives this line now, so the line's handlers have to go with
     // it: a leftover handler would let a late event finish the *next* line.
     playbackTokenRef.current++;
+    playAttemptRef.current++;
     if (audioRef.current) {
       const audio = audioRef.current;
       audioRef.current = null;
@@ -564,7 +579,7 @@ export function useDiscussionTTS({
         const audio = audioRef.current;
         // Keep this line's finish token if its play rejects after a scene change.
         const lineFinish = finishAudioRef.current;
-        void audio.play().catch(() => lineFinish?.());
+        if (lineFinish) void playAudio(audio, lineFinish);
       } else if (!isPlayingRef.current) {
         processQueueRef.current(true);
       }
@@ -582,7 +597,7 @@ export function useDiscussionTTS({
       });
     }
     return resumeAudio();
-  }, []);
+  }, [playAudio]);
 
   // Sync playbackSpeed to currently playing audio in real-time
   useEffect(() => {

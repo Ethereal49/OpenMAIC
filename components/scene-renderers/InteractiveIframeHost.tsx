@@ -468,7 +468,7 @@ function PooledIframe({
             iframeRef.current && observation.identity
               ? createObservationSession(iframeRef.current, observation.identity)
               : null;
-          mediaSession.current?.sync(visible);
+          mediaSession.current?.loaded(visible);
           markIframeReady(sceneId);
         }}
         src={entry.srcDoc ? undefined : entry.src}

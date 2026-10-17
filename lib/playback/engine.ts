@@ -89,6 +89,7 @@ export class PlaybackEngine {
   private browserTTSPausedChunks: string[] = []; // remaining chunks saved on pause (for cancel+re-speak)
   private speechTimerRemaining: number = 0; // remaining ms (set on pause)
   private playbackGeneration: number = 0;
+  private pendingSpeech: { generation: number; actionIndex: number } | null = null;
   // Keep the cursor on speech for progress/persistence; defer its cues until playback starts.
   private pendingNavigationSpeechIndex: number | null = null;
 
@@ -222,6 +223,8 @@ export class PlaybackEngine {
   /** playing → paused | live → paused (abort SSE, truncate, topic pending) */
   pause(): void {
     if (this.mode === 'playing') {
+      const pending =
+        this.pendingSpeech?.generation === this.playbackGeneration ? this.pendingSpeech : null;
       this.invalidatePlaybackGeneration();
       // Cancel pending timers
       if (this.triggerDelayTimer) {
@@ -237,7 +240,12 @@ export class PlaybackEngine {
         clearTimeout(this.speechTimer);
         this.speechTimer = null;
       }
+      if (pending) {
+        this.actionIndex = pending.actionIndex;
+        this.pendingSpeech = null;
+      }
       this.setMode('paused');
+      if (pending) this.audioPlayer.stop();
       // Freeze TTS — but skip if waiting on ProactiveCard (no active speech)
       if (!this.currentTrigger) {
         if (this.browserTTSActive) {
@@ -503,6 +511,7 @@ export class PlaybackEngine {
 
   private invalidatePlaybackGeneration(): number {
     this.playbackGeneration += 1;
+    this.pendingSpeech = null;
     return this.playbackGeneration;
   }
 
@@ -633,6 +642,7 @@ export class PlaybackEngine {
         // onEnded → processNext; if paused, resume() will call processNext
         this.audioPlayer.onEnded(() => {
           if (!this.isCurrentGeneration(generation)) return;
+          this.pendingSpeech = null;
           this.callbacks.onSpeechEnd?.();
           if (this.mode === 'playing') {
             this.processNext(generation);
@@ -665,11 +675,14 @@ export class PlaybackEngine {
         // which would hang playback on that slide.
         const hasText = !!speechAction.text.trim();
 
+        const pending = { generation, actionIndex: this.actionIndex - 1 };
+        this.pendingSpeech = pending;
         this.audioPlayer
           // The legacy URL of an unconverted pair rides along as the
           // fallback of last resort; converted documents carry no audioUrl.
           .play(speechAction.audioId || '', (speechAction as LegacySpeechAction).audioUrl)
           .then((audioStarted) => {
+            if (this.pendingSpeech === pending) this.pendingSpeech = null;
             if (!this.isCurrentGeneration(generation)) return;
             if (!audioStarted) {
               // No pre-generated audio — try browser-native TTS only when it is
@@ -687,6 +700,7 @@ export class PlaybackEngine {
             }
           })
           .catch((err) => {
+            if (this.pendingSpeech === pending) this.pendingSpeech = null;
             if (!this.isCurrentGeneration(generation)) return;
             log.error('TTS error:', err);
             scheduleReadingTimer();

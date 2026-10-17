@@ -13,6 +13,7 @@ const cleanups: Array<() => void> = [];
 afterEach(() => {
   cleanups.splice(0).forEach((cleanup) => cleanup());
   document.body.replaceChildren();
+  vi.useRealTimers();
 });
 
 function fixture() {
@@ -21,9 +22,18 @@ function fixture() {
   const played = vi.fn();
   const post = vi.spyOn(frame.contentWindow!, 'postMessage');
   const session = createInteractiveMediaSession(frame, 'current', played);
+  session.sync();
   cleanups.push(() => session.dispose());
   const message = (data: unknown, source: MessageEventSource | null = frame.contentWindow) =>
-    window.dispatchEvent(new MessageEvent('message', { source, data }));
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        source,
+        data:
+          data && typeof data === 'object'
+            ? { generation: post.mock.calls.at(-1)![0].generation, ...data }
+            : data,
+      }),
+    );
   return { frame, played, post, session, message };
 }
 const playing = { type: 'maic:media:state:v1', documentId: 'current', requestId: 0, playing: true };
@@ -54,10 +64,34 @@ function bridgeFixture() {
       this.dispatchEvent(new Event('pause'));
     }
   }
+  class Context extends EventTarget {
+    static pendingSuspend: Promise<void> | undefined;
+    state = 'running';
+    suspend() {
+      const finish = () => {
+        this.state = 'suspended';
+        this.dispatchEvent(new Event('statechange'));
+      };
+      if (Context.pendingSuspend) return Context.pendingSuspend.then(finish);
+      finish();
+      return Promise.resolve();
+    }
+    resume() {
+      this.state = 'running';
+      this.dispatchEvent(new Event('statechange'));
+      return Promise.resolve();
+    }
+    close() {
+      this.state = 'closed';
+      this.dispatchEvent(new Event('statechange'));
+      return Promise.resolve();
+    }
+  }
   const frameWindow = new EventTarget() as EventTarget & {
     parent: { postMessage: ReturnType<typeof vi.fn> };
   };
   frameWindow.parent = { postMessage: vi.fn() };
+  Object.assign(frameWindow, { AudioContext: Context });
   const script = mediaBridgeScript('test').replace(/^<script[^>]*>|<\/script>$/g, '');
   const frameDocument = new EventTarget();
   const nativePlay = vi.spyOn(frameDocument, 'addEventListener');
@@ -67,8 +101,25 @@ function bridgeFixture() {
     HTMLMediaElement: Media,
     Set: TrackedSet,
   });
+  const control = (payload: Record<string, unknown>) =>
+    frameWindow.dispatchEvent(
+      new MessageEvent('message', {
+        source: frameWindow.parent as unknown as Window,
+        data: { type: MEDIA_CONTROL, documentId: 'test', generation: 1, ...payload },
+      }),
+    );
+  control({ action: 'sync', enabled: true });
   return {
     Media,
+    Context: (frameWindow as unknown as { AudioContext: typeof Context }).AudioContext,
+    contextSet: sets[1],
+    control,
+    gesture: () =>
+      (
+        nativePlay.mock.calls.find(([type]) => type === 'pointerdown')?.[1] as
+          | EventListener
+          | undefined
+      )?.({ isTrusted: true } as Event),
     media: sets[0],
     frameWindow,
     nativePlay: (element: Media) =>
@@ -113,7 +164,13 @@ describe('injected media lifetime', () => {
       frameWindow.dispatchEvent(
         new MessageEvent('message', {
           source: frameWindow.parent as unknown as Window,
-          data: { type: MEDIA_CONTROL, documentId: 'test', action: 'sync', enabled: false },
+          data: {
+            type: MEDIA_CONTROL,
+            documentId: 'test',
+            generation: 1,
+            action: 'sync',
+            enabled: false,
+          },
         }),
       );
       expect(reused.paused).toBe(true);
@@ -137,7 +194,128 @@ describe('injected media lifetime', () => {
   );
 });
 
+describe('bridge-owned AudioContext suspension', () => {
+  it('restores only bridge-suspended contexts on a fresh gesture', async () => {
+    const { Context, control, gesture } = bridgeFixture();
+    const sound = new Context();
+    control({ action: 'pause', requestId: 1 });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(sound.state).toBe('suspended');
+    gesture();
+    await Promise.resolve();
+    expect(sound.state).toBe('running');
+    await sound.suspend();
+    gesture();
+    expect(sound.state).toBe('suspended');
+    await sound.close();
+    gesture();
+    expect(sound.state).toBe('closed');
+  });
+
+  it.each(['suspend', 'close'] as const)(
+    'respects authored %s after a bridge suspension',
+    async (method) => {
+      const { Context, control, gesture } = bridgeFixture();
+      const sound = new Context();
+      control({ action: 'pause', requestId: 1 });
+      await Promise.resolve();
+      await Promise.resolve();
+      await sound[method]();
+      gesture();
+      expect(sound.state).toBe(method === 'close' ? 'closed' : 'suspended');
+    },
+  );
+
+  it('does not strongly retain inactive contexts and re-registers authored resume', async () => {
+    const { Context, contextSet, control } = bridgeFixture();
+    const sound = new Context();
+    control({ action: 'pause', requestId: 1 });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(contextSet.size).toBe(0);
+    await sound.resume();
+    expect(contextSet.size).toBe(1);
+    await sound.suspend();
+    expect(contextSet.size).toBe(0);
+  });
+
+  it('requires a new gesture after a frame was hidden', async () => {
+    const { Context, control, gesture } = bridgeFixture();
+    const sound = new Context();
+    control({ action: 'sync', enabled: false });
+    await Promise.resolve();
+    await Promise.resolve();
+    gesture();
+    expect(sound.state).toBe('suspended');
+    control({ action: 'sync', enabled: true });
+    expect(sound.state).toBe('suspended');
+    gesture();
+    expect(sound.state).toBe('running');
+  });
+
+  it('does not lose a gesture while the bridge suspend promise is pending', async () => {
+    const { Context, control, gesture } = bridgeFixture();
+    let release!: () => void;
+    Context.pendingSuspend = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const sound = new Context();
+    control({ action: 'pause', requestId: 1 });
+    gesture();
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(sound.state).toBe('running');
+  });
+});
+
 describe('interactive media boundary', () => {
+  it('allows narration after an unknown frame stops answering', async () => {
+    vi.useFakeTimers();
+    const { session } = fixture();
+    const silent = session.pause();
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(silent).resolves.toBe(true);
+    vi.useRealTimers();
+  });
+
+  it('forgets old playback on a document load and rejects its late reports', async () => {
+    vi.useFakeTimers();
+    const { session, message, post, played } = fixture();
+    session.loaded();
+    message(playing);
+    const oldGeneration = post.mock.calls.at(-1)![0].generation;
+    const old = session.pause();
+    const oldId = post.mock.calls.at(-1)![0].requestId;
+    session.loaded();
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(old).resolves.toBe(true);
+    played.mockClear();
+    message({ ...playing, generation: oldGeneration });
+    message({ ...playing, generation: oldGeneration, requestId: oldId });
+    expect(played).not.toHaveBeenCalled();
+    const next = session.pause();
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(next).resolves.toBe(true);
+    vi.useRealTimers();
+  });
+
+  it('resynchronizes a bridge that starts before iframe load without accepting its old state', () => {
+    const { session, message, played, post } = fixture();
+    message({ ...playing, generation: 0 });
+    expect(played).not.toHaveBeenCalled();
+    expect(post).toHaveBeenLastCalledWith(
+      expect.objectContaining({ action: 'sync', generation: expect.any(Number) }),
+      '*',
+    );
+    const firstGeneration = post.mock.calls.at(-1)![0].generation;
+    message(playing);
+    expect(played).toHaveBeenCalledOnce();
+    session.loaded();
+    expect(post.mock.calls.at(-1)![0].generation).not.toBe(firstGeneration);
+    message({ ...playing, generation: firstGeneration });
+    expect(played).toHaveBeenCalledOnce();
+  });
   it('installs before authored scripts only for live playback consumers', () => {
     const html = '<html><head><script>new AudioContext()</script></head><body></body></html>';
     const patched = patchHtmlForIframe(html, undefined, 'current');
@@ -178,6 +356,7 @@ describe('interactive media boundary', () => {
       {
         type: MEDIA_CONTROL,
         documentId: 'current',
+        generation: expect.any(Number),
         action: 'pause',
         requestId: expect.any(Number),
       },
@@ -213,7 +392,8 @@ describe('interactive media boundary', () => {
 
   it('fails closed when silence cannot be confirmed, including disposal', async () => {
     vi.useFakeTimers();
-    const { session } = fixture();
+    const { session, message } = fixture();
+    message(playing);
     const timedOut = session.pause();
     await vi.advanceTimersByTimeAsync(1000);
     await expect(timedOut).resolves.toBe(false);
@@ -230,6 +410,7 @@ describe('interactive media boundary', () => {
       {
         type: MEDIA_CONTROL,
         documentId: 'current',
+        generation: expect.any(Number),
         action: 'pause',
         requestId: expect.any(Number),
       },
@@ -239,7 +420,13 @@ describe('interactive media boundary', () => {
     message(playing);
     expect(played).not.toHaveBeenCalled();
     expect(post).toHaveBeenLastCalledWith(
-      { type: MEDIA_CONTROL, documentId: 'current', action: 'sync', enabled: false },
+      {
+        type: MEDIA_CONTROL,
+        documentId: 'current',
+        generation: expect.any(Number),
+        action: 'sync',
+        enabled: false,
+      },
       '*',
     );
   });

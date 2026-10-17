@@ -333,7 +333,7 @@ export class WidgetChannel {
   markLoaded(frame: HTMLIFrameElement): void {
     if (frame !== this.frame) return;
     this.loaded = true;
-    this.mediaSession?.sync();
+    this.mediaSession?.loaded();
     const pending = this.queue;
     this.queue = [];
     for (const message of pending) this.post(message);

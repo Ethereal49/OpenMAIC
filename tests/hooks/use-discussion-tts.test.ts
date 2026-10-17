@@ -76,6 +76,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 class FakeAudio extends EventTarget {
   static instances: FakeAudio[] = [];
+  static pendingPlay: (() => Promise<void>) | undefined;
   playbackRate = 1;
   defaultPlaybackRate = 1;
   volume = 1;
@@ -85,6 +86,7 @@ class FakeAudio extends EventTarget {
   onerror: ((event?: Event) => void) | null = null;
   play = vi.fn(async () => {
     this.paused = false;
+    await FakeAudio.pendingPlay?.();
   });
   pause = vi.fn(() => {
     this.paused = true;
@@ -196,6 +198,7 @@ beforeEach(() => {
   mocks.settings.playbackSpeed = 1;
   requests.length = 0;
   FakeAudio.instances = [];
+  FakeAudio.pendingPlay = undefined;
   enabled = true;
   beforePlayback = undefined;
   agents = [teacher];
@@ -223,6 +226,31 @@ afterEach(() => {
 });
 
 describe('discussion TTS synthesis lookahead', () => {
+  it.each([false, true])(
+    'keeps an interrupted pending play on the same clip (resume before rejection: %s)',
+    async (resumeFirst) => {
+      const pending = deferred<void>();
+      FakeAudio.pendingPlay = () => pending.promise;
+      await seal('A');
+      await seal('B');
+      await respond(0);
+      const audio = FakeAudio.instances[0];
+      const src = audio.src;
+      act(() => hook.pause());
+      FakeAudio.pendingPlay = undefined;
+      if (resumeFirst) await act(async () => hook.resume());
+      await act(async () =>
+        pending.reject(new DOMException('play interrupted by pause', 'AbortError')),
+      );
+      expect(hook.shouldHold()).toEqual({ holding: true, segmentDone: 0 });
+      expect(audio.src).toBe(src);
+      if (!resumeFirst) await act(async () => hook.resume());
+      expect(audio.paused).toBe(false);
+      expect(audio.play).toHaveBeenCalledTimes(2);
+      await act(async () => audio.end());
+      expect(hook.shouldHold().segmentDone).toBe(1);
+    },
+  );
   it('reports a blocked first segment and retries it with one silence check on resume', async () => {
     const guard = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
     beforePlayback = guard;
