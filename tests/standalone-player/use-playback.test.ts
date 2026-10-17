@@ -61,6 +61,34 @@ async function blockSecondSpeech() {
 }
 
 describe('standalone narration silence failures', () => {
+  it.each(['play', 'toggle'] as const)(
+    'lets %s continue from holding without waiting for the departing frame',
+    async (command) => {
+      const silence = vi.mocked(WidgetChannel.prototype.pauseMedia);
+      silence.mockReset().mockReturnValue(true);
+      await act(async () => playback.play());
+      await act(async () => finishAudio());
+      await act(async () => finishAudio());
+      expect(playback.state.mode).toBe('holding');
+      silence.mockReset().mockReturnValue(Promise.resolve(false));
+      await act(async () => playback[command]());
+      expect(navigate).toHaveBeenCalledWith(1);
+      expect(silence).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps the silence preflight when resuming paused narration', async () => {
+    const silence = vi.mocked(WidgetChannel.prototype.pauseMedia);
+    silence.mockReset().mockReturnValue(true);
+    await act(async () => playback.play());
+    act(() => playback.pause());
+    silence.mockReturnValue(Promise.resolve(false));
+    await act(async () => playback.play());
+    expect(playback.state.mode).toBe('paused');
+    expect(navigate).not.toHaveBeenCalled();
+    expect(NarrationPlayer.prototype.play).toHaveBeenCalledTimes(1);
+  });
+
   it('pauses on the current speech and retries its audio instead of advancing on reading time', async () => {
     await blockSecondSpeech();
     expect(playback.state).toMatchObject({ mode: 'paused', view: { caption: 'B' } });

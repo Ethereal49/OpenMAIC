@@ -87,11 +87,15 @@ export function usePlayback(
   const play = useCallback(async () => {
     // Prime inside the gesture; the real clip waits for the frame to be silent.
     narration.prime();
-    const silence = widgets.pauseMedia();
-    if (silence !== true && !(await silence)) return;
+    // Continue unmounts the old frame; the next scene guards its own narration.
+    const advancing = controller.getState().mode === 'holding' && index < scenes.length - 1;
+    if (!advancing) {
+      const silence = widgets.pauseMedia();
+      if (silence !== true && !(await silence)) return;
+    }
     videos.pauseManual();
     controller.play();
-  }, [controller, narration, videos, widgets]);
+  }, [controller, index, narration, scenes.length, videos, widgets]);
   const toggle = useCallback(() => {
     if (controller.getState().mode === 'playing') controller.pause();
     else void play();

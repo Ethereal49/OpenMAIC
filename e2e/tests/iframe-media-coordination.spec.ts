@@ -221,6 +221,57 @@ for (const surface of ['app', 'standalone'] as const) {
     }
 
     if (surface === 'standalone') {
+      test('continues from holding while the departing frame ignores silence controls', async ({
+        page,
+      }) => {
+        const child = page.frames()[1];
+        await child.evaluate(() => {
+          document.querySelectorAll<HTMLMediaElement>('audio,video').forEach((media) => {
+            media.preload = 'none';
+            media.removeAttribute('src');
+            media.load();
+          });
+          const detached = (window as unknown as { detached: HTMLAudioElement }).detached;
+          detached.removeAttribute('src');
+          detached.load();
+        });
+        await expect.poll(() => child.evaluate('document.readyState')).toBe('complete');
+        await child.locator('audio').evaluate((media, src) => {
+          media.src = src;
+        }, audio);
+        await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+        await expect.poll(() => page.evaluate('narrationPaused()')).toBe(false);
+        await page.evaluate('audios[0].pause(); audios[0].dispatchEvent(new Event("ended"))');
+        await expect.poll(() => page.evaluate('caption()')).toBe('Second narration');
+        await expect.poll(() => page.evaluate('narrationPaused()')).toBe(false);
+        await page.evaluate('audios[0].pause(); audios[0].dispatchEvent(new Event("ended"))');
+        await expect.poll(() => page.evaluate('mode()')).toBe('holding');
+        const playing = page.evaluate(
+          () =>
+            new Promise<void>((resolve) => {
+              const listener = (event: MessageEvent) => {
+                if (
+                  event.data?.type === 'maic:media:state:v1' &&
+                  event.data.generation > 0 &&
+                  event.data.playing
+                ) {
+                  window.removeEventListener('message', listener);
+                  resolve();
+                }
+              };
+              window.addEventListener('message', listener);
+            }),
+        );
+        await page.frameLocator('iframe').locator('#audio').click();
+        await playing;
+        await page.frames()[1].evaluate(() => {
+          (window as unknown as { blockMediaControls: boolean }).blockMediaControls = true;
+        });
+        await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+        await expect(page.locator('iframe')).toHaveCount(0);
+        await expect.poll(() => page.evaluate('mode()')).toBe('idle');
+      });
+
       test('retains a second narration after a silence timeout and retries it on Play', async ({
         page,
       }) => {
