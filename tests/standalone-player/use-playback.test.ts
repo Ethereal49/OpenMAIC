@@ -17,10 +17,11 @@ const scenes = [0, 1].map((order) => ({
 let root: Root;
 let playback: Playback;
 let index: number;
+let activeScenes: ManifestScene[];
 let finishAudio: () => void;
 const navigate = vi.fn();
 function Probe() {
-  const current = usePlayback(scenes, index, navigate);
+  const current = usePlayback(activeScenes, index, navigate);
   useEffect(() => {
     playback = current;
   });
@@ -45,6 +46,7 @@ beforeEach(() => {
     .mockReturnValueOnce(Promise.resolve(false));
   navigate.mockReset();
   index = 0;
+  activeScenes = scenes;
   root = createRoot(document.createElement('div'));
   act(() => root.render(createElement(Probe)));
 });
@@ -61,6 +63,68 @@ async function blockSecondSpeech() {
 }
 
 describe('standalone narration silence failures', () => {
+  it.each(['play', 'toggle'] as const)(
+    'lets %s restart a completed last scene but guards the destination speech',
+    async (command) => {
+      const silence = vi.mocked(WidgetChannel.prototype.pauseMedia);
+      silence.mockReset().mockReturnValue(true);
+      index = 1;
+      await act(async () => root.render(createElement(Probe)));
+      await act(async () => playback.play());
+      await act(async () => finishAudio());
+      await act(async () => finishAudio());
+      expect(playback.state.mode).toBe('idle');
+      silence.mockReset().mockReturnValue(Promise.resolve(false));
+      await act(async () => playback[command]());
+      expect(navigate).toHaveBeenCalledExactlyOnceWith(0);
+      expect(silence).not.toHaveBeenCalled();
+      vi.mocked(NarrationPlayer.prototype.play).mockClear();
+      index = 0;
+      await act(async () => root.render(createElement(Probe)));
+      expect(playback.state.mode).toBe('paused');
+      expect(silence).toHaveBeenCalledOnce();
+      expect(NarrationPlayer.prototype.play).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([false, true])(
+    'guards unfinished idle after navigation (started: %s)',
+    async (started) => {
+      const silence = vi.mocked(WidgetChannel.prototype.pauseMedia);
+      silence.mockReset().mockReturnValue(true);
+      if (started) {
+        await act(async () => playback.play());
+        act(() => playback.pause());
+      }
+      index = 1;
+      await act(async () => root.render(createElement(Probe)));
+      expect(playback.state.mode).toBe('idle');
+      vi.mocked(NarrationPlayer.prototype.play).mockClear();
+      silence.mockReturnValue(Promise.resolve(false));
+      await act(async () => playback.play());
+      expect(navigate).not.toHaveBeenCalled();
+      expect(NarrationPlayer.prototype.play).not.toHaveBeenCalled();
+      expect(playback.state.mode).toBe('idle');
+    },
+  );
+
+  it('keeps the silence guard when a single completed scene replays in place', async () => {
+    const silence = vi.mocked(WidgetChannel.prototype.pauseMedia);
+    silence.mockReset().mockReturnValue(true);
+    activeScenes = scenes.slice(0, 1);
+    await act(async () => root.render(createElement(Probe)));
+    await act(async () => playback.play());
+    await act(async () => finishAudio());
+    await act(async () => finishAudio());
+    expect(playback.state.mode).toBe('idle');
+    vi.mocked(NarrationPlayer.prototype.play).mockClear();
+    silence.mockReturnValue(Promise.resolve(false));
+    await act(async () => playback.play());
+    expect(navigate).not.toHaveBeenCalled();
+    expect(NarrationPlayer.prototype.play).not.toHaveBeenCalled();
+    expect(playback.state.mode).toBe('idle');
+  });
+
   it.each(['play', 'toggle'] as const)(
     'lets %s continue from holding without waiting for the departing frame',
     async (command) => {
