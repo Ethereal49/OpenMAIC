@@ -46,7 +46,12 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-it.each([true, false])('gates retained lecture text after Q&A on silence=%s', async (silent) => {
+it.each([
+  ['speech', true],
+  ['speech', false],
+  ['discussion', true],
+  ['discussion', false],
+] as const)('gates retained %s lecture text after Q&A on silence=%s', async (kind, silent) => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.useFakeTimers();
   fixture.state.chats = [];
@@ -59,14 +64,22 @@ it.each([true, false])('gates retained lecture text after Q&A on silence=%s', as
   const pendingRetry = new Promise<boolean>((resolve) => {
     releaseRetry = resolve;
   });
-  const pendingLectureResumeRef = { current: null as string | null };
   let releaseGuard!: (silent: boolean) => void;
   const pendingGuard = new Promise<boolean>((resolve) => {
     releaseGuard = resolve;
   });
   let onSpeechStart = (_text: string, _index: number) => {};
+  let onPlaybackReadyChange = (_ready: boolean) => {};
   const engine = new PlaybackEngine(
-    [{ id: 'scene', actions: [{ id: 'line', type: 'speech', text: 'First line' }] }] as Scene[],
+    [
+      {
+        id: 'scene',
+        actions: [
+          { id: 'line', type: 'speech', text: 'First line' },
+          { id: 'discussion', type: 'discussion', topic: 'Question', prompt: 'Discuss' },
+        ],
+      },
+    ] as Scene[],
     { clearEffects() {} } as unknown as ActionEngine,
     {
       play: async () => true,
@@ -80,10 +93,11 @@ it.each([true, false])('gates retained lecture text after Q&A on silence=%s', as
       beforeSpeech: () =>
         blocked
           ? pendingGuard
-          : holdRetry && ++retryCalls === 2
+          : holdRetry && ++retryCalls === (kind === 'speech' ? 2 : 1)
             ? pendingRetry
             : Promise.resolve(true),
       onSpeechStart: (text, index) => onSpeechStart(text, index),
+      onPlaybackReadyChange: (ready) => onPlaybackReadyChange(ready),
     },
   );
   try {
@@ -92,7 +106,15 @@ it.each([true, false])('gates retained lecture text after Q&A on silence=%s', as
     await act(async () => {
       sessionId = await ref.current!.startLecture('scene');
     });
-    engine.start();
+    if (kind === 'discussion') {
+      engine.restoreFromSnapshot({
+        sceneIndex: 0,
+        actionIndex: 1,
+        consumedDiscussions: [],
+        sceneId: 'scene',
+      });
+      engine.continuePlayback();
+    } else engine.start();
     await Promise.resolve();
     engine.pause();
     await act(async () => {
@@ -113,6 +135,7 @@ it.each([true, false])('gates retained lecture text after Q&A on silence=%s', as
     );
     let callback = '';
     let speechCallback = '';
+    let readyCallback = '';
     let manualCallback = '';
     const visit = (node: ts.Node) => {
       if (
@@ -124,6 +147,8 @@ it.each([true, false])('gates retained lecture text after Q&A on silence=%s', as
         callback = node.initializer.arguments[0].getText(file);
       if (ts.isPropertyAssignment(node) && node.name.getText(file) === 'onSpeechStart')
         speechCallback = node.initializer.getText(file);
+      if (ts.isPropertyAssignment(node) && node.name.getText(file) === 'onPlaybackReadyChange')
+        readyCallback = node.initializer.getText(file);
       if (
         ts.isVariableDeclaration(node) &&
         node.name.getText(file) === 'handlePlayPause' &&
@@ -140,7 +165,6 @@ it.each([true, false])('gates retained lecture text after Q&A on silence=%s', as
         compilerOptions: { target: ts.ScriptTarget.ES2022 },
       }).outputText,
       {
-        pendingLectureResumeRef,
         engineRef: { current: engine },
         doSessionCleanup: () => engine.handleEndDiscussion(),
         shouldAutoResumeLecture,
@@ -154,11 +178,21 @@ it.each([true, false])('gates retained lecture text after Q&A on silence=%s', as
         compilerOptions: { target: ts.ScriptTarget.ES2022 },
       }).outputText,
       {
-        pendingLectureResumeRef,
         lectureSessionIdRef: { current: sessionId },
         chatAreaRef: ref,
         setLectureSpeech() {},
         setActiveBubbleId() {},
+      },
+    );
+    onPlaybackReadyChange = runInNewContext(
+      ts.transpileModule('(' + readyCallback + ')', {
+        compilerOptions: { target: ts.ScriptTarget.ES2022 },
+      }).outputText,
+      {
+        engine,
+        engineRef: { current: engine },
+        lectureSessionIdRef: { current: sessionId },
+        chatAreaRef: ref,
       },
     );
     blocked = true;
@@ -189,16 +223,17 @@ it.each([true, false])('gates retained lecture text after Q&A on silence=%s', as
           engineRef: { current: engine },
           chatAreaRef: ref,
           lectureSessionIdRef: { current: sessionId },
-          pendingLectureResumeRef,
         },
       ) as () => Promise<void>;
+      let manual: Promise<void>;
       await act(async () => {
-        await manualResume();
+        manual = manualResume();
         await vi.advanceTimersByTimeAsync(6000);
       });
       expect(texts()).toEqual([]);
       await act(async () => {
         releaseRetry(true);
+        await manual!;
         await vi.advanceTimersByTimeAsync(6000);
       });
     }
@@ -279,7 +314,6 @@ it('persists a pending lecture sentence once when the real player retries it', a
           compilerOptions: { target: ts.ScriptTarget.ES2022 },
         }).outputText,
         {
-          pendingLectureResumeRef: { current: null },
           lectureSessionIdRef: { current: sessionId },
           chatAreaRef: ref,
           lectureActionCounterRef: { current: 0 },

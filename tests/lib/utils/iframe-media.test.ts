@@ -97,6 +97,7 @@ function bridgeFixture() {
   }
   NativeAudio.prototype = Media.prototype;
   class FrameElement extends FrameNode {
+    style = { cssText: '', width: '', height: '' };
     elements: Media[] = [];
     private html = '';
     get innerHTML() {
@@ -195,6 +196,28 @@ function bridgeFixture() {
 }
 
 describe('injected media lifetime', () => {
+  it('keeps parser-discovered media observable after release and detached native reuse', async () => {
+    const { Media, media, nativePlay, control, frameWindow } = bridgeFixture();
+    const element = new Media();
+    element.paused = false;
+    nativePlay(element);
+    expect(media.has(element)).toBe(true);
+    element.pause();
+    expect(media.size).toBe(0);
+    frameWindow.parent.postMessage.mockClear();
+    element.paused = false;
+    element.dispatchEvent(new Event('play'));
+    expect(media.has(element)).toBe(true);
+    expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ playing: true }),
+      '*',
+    );
+    control({ action: 'pause', requestId: 1 });
+    await Promise.resolve();
+    expect(element.paused).toBe(true);
+    expect(media.size).toBe(0);
+  });
+
   it('aggregates nested media only from its registered source, document and generation', async () => {
     vi.useFakeTimers();
     const { frameWindow, frameDocument, control } = bridgeFixture();
@@ -267,6 +290,85 @@ describe('injected media lifetime', () => {
       '*',
     );
   });
+
+  it('patches deeply nested ordinary HTML without consuming the JavaScript call stack', () => {
+    const html = '<div>'.repeat(8000) + 'deep leaf' + '</div>'.repeat(8000);
+    expect(patchHtmlForIframe(html)).toContain(html);
+    expect(patchHtmlForIframe(html, undefined, 'deep')).toContain(html);
+  });
+
+  it('bounds nested document instrumentation at four levels while preserving the remaining document', () => {
+    const escape = (value: string) => value.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+    let html = '<p>deepest document</p>';
+    for (let i = 0; i < 6; i++) html = `<iframe srcdoc="${escape(html)}"></iframe>`;
+    let current = patchHtmlForIframe(html, undefined, 'root');
+    for (let depth = 1; depth <= 6; depth++) {
+      current = new DOMParser()
+        .parseFromString(current, 'text/html')
+        .querySelector('iframe')!
+        .getAttribute('srcdoc')!;
+      expect(Boolean(mediaDocumentId(current))).toBe(depth <= 4);
+    }
+    expect(current).toContain('deepest document');
+  });
+
+  it.each(['', 'allow-forms'])(
+    'does not advertise an executable bridge inside sandbox="%s"',
+    (sandbox) => {
+      const patched = patchHtmlForIframe(
+        `<iframe sandbox="${sandbox}" srcdoc="<audio controls></audio>"></iframe>`,
+        undefined,
+        'root',
+      );
+      const frame = new DOMParser().parseFromString(patched, 'text/html').querySelector('iframe')!;
+      expect(frame.getAttribute('sandbox')).toBe(sandbox);
+      expect(mediaDocumentId(frame.getAttribute('srcdoc')!)).toBeUndefined();
+      expect(frame.getAttribute('srcdoc')).toContain('<audio controls>');
+    },
+  );
+
+  it.each([
+    ['', false],
+    ['allow-forms', false],
+    ['allow-scripts', true],
+    ['ALLOW-SCRIPTS', true],
+    ['allow-forms\tallow-scripts', true],
+    ['allow-scriptsr', false],
+    ['allow-forms\u00a0allow-scripts', false],
+  ] as const)(
+    'registers nested controls only for valid script sandbox tokens: %s',
+    (sandbox, allowed) => {
+      const { frameWindow, frameDocument } = bridgeFixture();
+      const postMessage = vi.fn();
+      const source = { postMessage };
+      const frame = {
+        contentWindow: source,
+        getAttribute: (name: string) =>
+          name === 'sandbox'
+            ? sandbox
+            : name === 'srcdoc'
+              ? '<script data-maic-media-document="child">'
+              : null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        style: { cssText: '' },
+      };
+      frameDocument.frames.push(frame);
+      frameWindow.dispatchEvent(
+        new MessageEvent('message', {
+          source: source as unknown as Window,
+          data: {
+            type: 'maic:media:state:v1',
+            documentId: 'child',
+            generation: 0,
+            requestId: 0,
+            playing: false,
+          },
+        }),
+      );
+      expect(postMessage.mock.calls.some(([data]) => data.action === 'sync')).toBe(allowed);
+    },
+  );
 
   it('injects nested srcdoc bridges recursively without changing outer authored bytes', () => {
     const escape = (html: string) => html.replace(/&/g, '&amp;').replace(/"/g, '&quot;');

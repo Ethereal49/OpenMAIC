@@ -66,6 +66,69 @@ describe('discussion consumption emits a progress snapshot', () => {
       .filter((snapshot) => snapshot.consumedDiscussions.includes(id));
   }
 
+  it.each([true, false])(
+    'gates non-speech continuation and its retry (silent=%s)',
+    async (silent) => {
+      vi.useFakeTimers();
+      let release!: (silent: boolean) => void;
+      const gate = new Promise<boolean>((resolve) => {
+        release = resolve;
+      });
+      const beforeSpeech = vi.fn(() => gate);
+      const ready = vi.fn();
+      const onProactiveShow = vi.fn();
+      const engine = new PlaybackEngine(
+        [scene([discussion('only')])],
+        createActionEngine(),
+        createAudioPlayer(),
+        { beforeSpeech, onPlaybackReadyChange: ready, onProactiveShow },
+      );
+      engine.continuePlayback();
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(ready.mock.calls).toEqual([[false]]);
+      expect(onProactiveShow).not.toHaveBeenCalled();
+      release(silent);
+      await vi.advanceTimersByTimeAsync(3000);
+      if (!silent) {
+        expect(engine.getMode()).toBe('paused');
+        expect(ready).not.toHaveBeenCalledWith(true);
+        beforeSpeech.mockResolvedValue(true);
+        await engine.resume();
+        await vi.advanceTimersByTimeAsync(3000);
+      }
+      expect(ready).toHaveBeenLastCalledWith(true);
+      expect(onProactiveShow).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ id: 'only' }),
+      );
+      engine.stop();
+    },
+  );
+
+  it('ignores a cancelled non-speech readiness check and retains its unconsumed cursor', async () => {
+    let release!: (silent: boolean) => void;
+    const gate = new Promise<boolean>((r) => {
+      release = r;
+    });
+    const ready = vi.fn();
+    const engine = new PlaybackEngine(
+      [scene([discussion('only')])],
+      createActionEngine(),
+      createAudioPlayer(),
+      { beforeSpeech: () => gate, onPlaybackReadyChange: ready },
+    );
+    engine.continuePlayback();
+    engine.pause();
+    engine.handleUserInterrupt('Question');
+    engine.handleEndDiscussion();
+    release(true);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(ready).not.toHaveBeenCalledWith(true);
+    expect(engine.getMode()).toBe('idle');
+    expect(engine.getSnapshot().actionIndex).toBe(0);
+    engine.stop();
+  });
+
   it.each([1, 2])('retains a delayed discussion across %s pauses', async (pauses) => {
     vi.useFakeTimers();
     const audio = createAudioPlayer();

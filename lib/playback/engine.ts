@@ -159,7 +159,7 @@ export class PlaybackEngine {
     this.pendingNavigationSpeechIndex = null;
     this.invalidatePlaybackGeneration();
     this.setMode('playing');
-    this.processNext();
+    this.processNext(this.playbackGeneration, true);
   }
 
   /** idle → playing (continue from current position, e.g. after discussion end) */
@@ -170,7 +170,7 @@ export class PlaybackEngine {
     }
     this.invalidatePlaybackGeneration();
     this.setMode('playing');
-    this.processNext();
+    this.processNext(this.playbackGeneration, true);
   }
 
   canJumpToAction(actionIndex: number): boolean {
@@ -289,21 +289,12 @@ export class PlaybackEngine {
       // Resume discussion → live
       this.currentTopicState = 'active';
       this.setMode('live');
-    } else if (this.currentTrigger) {
-      // Waiting on ProactiveCard — just resume mode, don't touch audio
-      this.setMode('playing');
     } else {
-      // Resume lecture
+      // Resume lecture, including a retained discussion card.
       this.setMode('playing');
       const generation = this.playbackGeneration;
-      if (this.callbacks.beforeSpeech) {
-        const silent = await this.callbacks.beforeSpeech();
-        if (this.getMode() !== 'playing' || !this.isCurrentGeneration(generation)) return;
-        if (!silent) {
-          this.pause();
-          return;
-        }
-      }
+      if (this.callbacks.beforeSpeech && !(await this.waitForMedia(generation))) return;
+      if (this.currentTrigger) return;
       if (this.browserTTSPausedChunks.length > 0) {
         // Browser TTS was paused via cancel — re-speak remaining chunks
         this.browserTTSActive = true;
@@ -595,10 +586,27 @@ export class PlaybackEngine {
     );
   }
 
+  private async waitForMedia(generation: number): Promise<boolean> {
+    if (this.callbacks.beforeSpeech) {
+      this.callbacks.onPlaybackReadyChange?.(false);
+      const silent = await this.callbacks.beforeSpeech();
+      if (this.mode !== 'playing' || !this.isCurrentGeneration(generation)) return false;
+      if (!silent) {
+        this.pause();
+        return false;
+      }
+      this.callbacks.onPlaybackReadyChange?.(true);
+    }
+    return this.mode === 'playing' && this.isCurrentGeneration(generation);
+  }
+
   /**
    * Core processing loop: consume the next action.
    */
-  private async processNext(generation: number = this.playbackGeneration): Promise<void> {
+  private async processNext(
+    generation: number = this.playbackGeneration,
+    checkMediaBeforeAction = false,
+  ): Promise<void> {
     if (this.mode !== 'playing' || !this.isCurrentGeneration(generation)) return;
 
     // Check for scene boundary (fire scene change callback at start of each new scene)
@@ -639,13 +647,10 @@ export class PlaybackEngine {
     const actionIndex = this.actionIndex;
     const pending = action.type === 'speech' ? { generation, actionIndex } : null;
     this.pendingSpeech = pending;
-    if (action.type === 'speech' && this.callbacks.beforeSpeech) {
-      const silent = await this.callbacks.beforeSpeech();
-      if (this.mode !== 'playing' || !this.isCurrentGeneration(generation)) return;
-      if (!silent) {
-        this.pause();
-        return;
-      }
+    if ((action.type === 'speech' || checkMediaBeforeAction) && this.callbacks.beforeSpeech) {
+      // The cursor still belongs to this unconsumed action during its asynchronous guard.
+      this.actionRewound = true;
+      if (!(await this.waitForMedia(generation))) return;
     }
 
     // Notify progress BEFORE advancing the cursor so the snapshot points at

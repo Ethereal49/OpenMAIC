@@ -319,7 +319,6 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
     const audioPlayerRef = useRef(createAudioPlayer());
     const chatAreaRef = useRef<ChatAreaRef>(null);
     const lectureSessionIdRef = useRef<string | null>(null);
-    const pendingLectureResumeRef = useRef<string | null>(null);
     const currentPlaybackActionIndexRef = useRef<number | null>(currentPlaybackActionIndex);
     const activeSceneIdRef = useRef<string | null>(currentSceneId);
     const discussionAbortRef = useRef<AbortController | null>(null);
@@ -578,7 +577,6 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
           return;
         }
         lectureSessionIdRef.current = sessionId;
-        pendingLectureResumeRef.current = sessionId;
         chatAreaRef.current.pauseBuffer(sessionId);
         engine.continuePlayback();
       },
@@ -821,6 +819,11 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
         // Create new PlaybackEngine
         const engine = new PlaybackEngine([currentScene], actionEngine, audioPlayerRef.current, {
           beforeSpeech: pauseInteractiveMedia,
+          onPlaybackReadyChange: (ready) => {
+            if (engineRef.current !== engine || !lectureSessionIdRef.current) return;
+            if (ready) chatAreaRef.current?.resumeBuffer(lectureSessionIdRef.current);
+            else chatAreaRef.current?.pauseBuffer(lectureSessionIdRef.current);
+          },
           onModeChange: (mode) => {
             setEngineMode(mode);
           },
@@ -847,8 +850,6 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
             // Keep the source action index stable when pending speech is retried.
             // Chat area pacing is handled by the StreamBuffer (onTextReveal)
             if (lectureSessionIdRef.current) {
-              pendingLectureResumeRef.current = null;
-              chatAreaRef.current?.resumeBuffer(lectureSessionIdRef.current);
               const speechId = `speech-${Date.now()}`;
               chatAreaRef.current?.addLectureMessage(
                 lectureSessionIdRef.current,
@@ -1208,13 +1209,6 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
       } else if (mode === 'paused') {
         await engine.resume();
         if (engineRef.current !== engine || engine.getMode() === 'paused') return;
-        // A retained recovery waits for onSpeechStart after the final silence guard.
-        if (
-          lectureSessionIdRef.current &&
-          pendingLectureResumeRef.current !== lectureSessionIdRef.current
-        ) {
-          chatAreaRef.current?.resumeBuffer(lectureSessionIdRef.current);
-        }
       } else {
         const wasCompleted = playbackCompleted;
         setPlaybackCompleted(false);

@@ -65,18 +65,24 @@ const activity = `<button id="audio" onclick="document.querySelector('audio').pl
 <button id="autoplay-createElement-video" onclick="startAutoplay('video','createElement')">DOM video</button>
 <button id="autoplay-createElementNS-audio" onclick="startAutoplay('audio','createElementNS')">DOM NS audio</button>
 <button id="autoplay-createElementNS-video" onclick="startAutoplay('video','createElementNS')">DOM NS video</button>
-${['cloneNode', 'importNode', 'createContextualFragment', 'innerHTML'].flatMap((method) => ['audio', 'video'].map((tag) => `<button id="autoplay-${method}-${tag}" onclick="startAutoplay('${tag}','${method}')">${method} ${tag}</button>`)).join('')}
+${['parser', 'cloneNode', 'importNode', 'createContextualFragment', 'innerHTML'].flatMap((method) => ['audio', 'video'].map((tag) => `<button id="autoplay-${method}-${tag}" onclick="startAutoplay('${tag}','${method}')">${method} ${tag}</button>`)).join('')}
 <button id="context" onclick="if(!window.ctx){ctx=new AudioContext();let o=ctx.createOscillator();o.connect(ctx.destination);o.start()}ctx.resume()">WebAudio</button>
+${['audio', 'video'].map((tag) => `<button id="prime-parser-${tag}" onclick="primeParserMedia('${tag}')">Prime parser ${tag}</button><${tag} id="parser-${tag}" src="${audio}" loop></${tag}>`).join('')}
 <button id="reuse-context" onclick="if(!window.ctx){ctx=new AudioContext();let o=ctx.createOscillator();o.connect(ctx.destination);o.start();ctx.resume()}">Reuse WebAudio</button>
 <iframe id="nested" style="display:none" srcdoc="${escapeAttribute(`<iframe id="inner" srcdoc="${escapeAttribute(nestedMedia)}"></iframe>`)}"></iframe>
 <form action="http://localhost/without-media-bridge"><button id="self-navigate">Navigate frame</button></form>
 <script>window.detached=new Audio(${JSON.stringify(audio)});detached.loop=true;
-window.autoplayEvents=0;window.explicitPlayCalls=0;
-window.startAutoplay=(tag,method)=>{if(!window.autoplayAudio){const play=HTMLMediaElement.prototype.play;HTMLMediaElement.prototype.play=function(){window.explicitPlayCalls++;return play.apply(this,arguments)};const original=tag?document.createElement(tag):null;let parsed;if(method==='innerHTML'){const container=document.createElement('div');container.innerHTML='<'+tag+'></'+tag+'>';parsed=container.firstChild;}window.autoplayAudio=!tag?new Audio():method==='innerHTML'?parsed:method==='cloneNode'?original.cloneNode(true):method==='importNode'?document.importNode(original,true):method==='createContextualFragment'?document.createRange().createContextualFragment('<'+tag+'></'+tag+'>').firstChild:method==='createElementNS'?document.createElementNS('http://www.w3.org/1999/xhtml',tag):original;if(tag==='video')autoplayAudio.playsInline=true;autoplayAudio.addEventListener('playing',()=>{window.autoplayEvents++;document.body.dataset.autoplayPlaying='true'});['pause','ended','emptied'].forEach(type=>autoplayAudio.addEventListener(type,()=>document.body.dataset.autoplayPlaying='false'));autoplayAudio.autoplay=true;}autoplayAudio.src=${JSON.stringify(audio)};};</script>`;
+window.autoplayEvents=0;window.explicitPlayCalls=0;window.primeParserMedia=async(tag)=>{window.parserMedia=document.getElementById('parser-'+tag);parserMedia.src=${JSON.stringify(audio)};await parserMedia.play();parserMedia.pause();parserMedia.remove();window.parserPrimed=true};
+window.startAutoplay=(tag,method)=>{if(!window.autoplayAudio){const play=HTMLMediaElement.prototype.play;HTMLMediaElement.prototype.play=function(){window.explicitPlayCalls++;return play.apply(this,arguments)};const original=tag?document.createElement(tag):null;let parsed;if(method==='innerHTML'){const container=document.createElement('div');container.innerHTML='<'+tag+'></'+tag+'>';parsed=container.firstChild;}window.autoplayAudio=method==='parser'?window.parserMedia:!tag?new Audio():method==='innerHTML'?parsed:method==='cloneNode'?original.cloneNode(true):method==='importNode'?document.importNode(original,true):method==='createContextualFragment'?document.createRange().createContextualFragment('<'+tag+'></'+tag+'>').firstChild:method==='createElementNS'?document.createElementNS('http://www.w3.org/1999/xhtml',tag):original;if(tag==='video')autoplayAudio.playsInline=true;autoplayAudio.addEventListener('playing',()=>{window.autoplayEvents++;document.body.dataset.autoplayPlaying='true'});['pause','ended','emptied'].forEach(type=>autoplayAudio.addEventListener(type,()=>document.body.dataset.autoplayPlaying='false'));autoplayAudio.autoplay=true;}autoplayAudio.src=${JSON.stringify(audio)};};</script>`;
 const hostPath = 'components/scene-renderers/InteractiveIframeHost.tsx';
 const playbackPath = 'components/edit/PlaybackChromeRoot.tsx';
 
-function bundle(surface: 'app' | 'standalone', restart = false, url = false): string {
+function bundle(
+  surface: 'app' | 'standalone',
+  restart = false,
+  url = false,
+  untrusted?: 'audio' | 'video' | 'url',
+): string {
   return buildSync({
     absWorkingDir: process.cwd(),
     stdin: {
@@ -88,7 +94,7 @@ import {createRoot} from 'react-dom/client';
 import {patchHtmlForIframe} from './lib/utils/iframe';
 import {createInteractiveMediaSession,mediaDocumentId,MEDIA_CONTROL} from './lib/interactive/media-bridge';
 const NativeAudio=window.Audio;window.audios=[];document.body.dataset.narrationPlaying='false';window.Audio=function(...args){const a=new NativeAudio(...args);if(!window.audios.length)['playing','pause','ended','emptied'].forEach(type=>a.addEventListener(type,()=>document.body.dataset.narrationPlaying=String(type==='playing')));window.audios.push(a);return a;};
-const html=${JSON.stringify(patchHtmlForIframe(activity, undefined, 'current').replace('<script data-maic-media-document', dropControls + '<script data-maic-media-document'))};
+const html=${JSON.stringify(patchHtmlForIframe(activity + (untrusted === 'url' ? '<iframe id="untrusted" name="untrusted" title="External activity" src="http://external.test/nested"></iframe>' : untrusted ? `<iframe id="untrusted" name="untrusted" title="Native ${untrusted}" sandbox="allow-forms" srcdoc="${escapeAttribute(`<${untrusted} controls preload="auto" src="${audio}"></${untrusted}><script>window.untrustedScriptRan=true</script>`)}"></iframe>` : ''), undefined, 'current').replace('<script data-maic-media-document', dropControls + '<script data-maic-media-document'))};
 ${
   surface === 'standalone'
     ? `
@@ -112,10 +118,10 @@ const runtime={errors:{},clearScene(){}};const useSceneRuntimeErrors=Object.assi
 const InteractiveRuntimeErrorBanner=()=>null;const resolveInteractivePickerMode=()=>null;const createObservationSession=()=>null;
 ${sourceFunction(hostPath, 'PooledIframe')}
 const currentScene={id:'s',type:'interactive',actions:[{id:'speech',type:'speech',text:'Narration',audioId:'narration'},{id:'second',type:'speech',text:'Second narration',audioId:'narration'}],content:{type:'interactive'}};
-const setLectureSpeech=()=>{};const setActiveBubbleId=()=>{};const setEngineMode=()=>{};const lectureSessionIdRef={current:null};const pendingLectureResumeRef={current:null};const chatAreaRef={current:null};const discussionTTS={pause(){}};const setIsDiscussionPaused=()=>{};
+const setLectureSpeech=()=>{};const setActiveBubbleId=()=>{};const setEngineMode=()=>{};const lectureSessionIdRef={current:null};const chatAreaRef={current:null};const discussionTTS={pause(){}};const setIsDiscussionPaused=()=>{};
 window.proactive=null;
 let currentSceneId='s';const pauseInteractiveMedia=${sourceFunction(playbackPath, 'pauseInteractiveMedia')};
-const engineRef={current:new PlaybackEngine([currentScene],{clearEffects(){},execute(){}},new AudioPlayer(),{beforeSpeech:pauseInteractiveMedia,onModeChange:${sourceFunction(playbackPath, 'onModeChange')},onSpeechStart:${sourceFunction(playbackPath, 'onSpeechStart')},onProactiveShow:trigger=>{window.proactive=trigger.id}})};
+const engine=new PlaybackEngine([currentScene],{clearEffects(){},execute(){}},new AudioPlayer(),{beforeSpeech:pauseInteractiveMedia,onModeChange:${sourceFunction(playbackPath, 'onModeChange')},onSpeechStart:${sourceFunction(playbackPath, 'onSpeechStart')},onPlaybackReadyChange:${sourceFunction(playbackPath, 'onPlaybackReadyChange')},onProactiveShow:trigger=>{window.proactive=trigger.id}});const engineRef={current:engine};
 const onMediaPlay=${sourceFunction(playbackPath, 'pauseForInteractiveMedia')};window.mode=()=>engineRef.current.getMode();
 window.cursor=()=>engineRef.current.getSnapshot().actionIndex;
 window.prepareDiscussion=()=>currentScene.actions.unshift({id:'delayed',type:'discussion',topic:'Question',prompt:'Discuss'});
@@ -239,6 +245,131 @@ for (const surface of ['app', 'standalone'] as const) {
       await page.goto('http://localhost/media-test');
       await page.addScriptTag({ content: bundle(surface) });
       await expect(page.frameLocator('iframe').locator('#audio')).toBeVisible();
+    });
+
+    for (const media of ['audio', 'video'] as const) {
+      test(`coordinates script-disabled nested native ${media} with a guarded reload`, async ({
+        page,
+        browserName,
+      }) => {
+        await page.goto('http://localhost/media-test');
+        await page.addScriptTag({ content: bundle(surface, false, false, media) });
+        const outer = page.frameLocator('iframe');
+        await expect(outer.locator('#audio')).toBeVisible();
+        await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+        await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
+        await expect
+          .poll(() =>
+            page.evaluate(
+              'audios[0]?.duration > 1 && !audios[0].paused && audios[0].currentTime > 0',
+            ),
+          )
+          .toBe(true);
+        const open = outer.getByRole('button', { name: new RegExp('Native ' + media + '.*open') });
+        await expect(open).toBeVisible();
+        await open.click();
+        await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+        await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'false');
+        const element = outer.frameLocator('#untrusted').locator(media);
+        await expect(element).toBeVisible();
+        const native = page.frames().find((f) => f.name() === 'untrusted')!;
+        await expect
+          .poll(() =>
+            native.evaluate(
+              (kind) => document.querySelector<HTMLMediaElement>(kind)!.duration,
+              media,
+            ),
+          )
+          .toBeGreaterThan(1);
+        expect(await native.evaluate('typeof window.untrustedScriptRan')).toBe('undefined');
+        if (browserName !== 'webkit') {
+          // Trusted native keyboard input; no authored script or play() call runs in this child.
+          await element.press('Space');
+          await expect
+            .poll(() =>
+              native.evaluate(
+                (kind) => document.querySelector<HTMLMediaElement>(kind)!.paused,
+                media,
+              ),
+            )
+            .toBe(false);
+          await expect
+            .poll(() =>
+              native.evaluate(
+                (kind) => document.querySelector<HTMLMediaElement>(kind)!.currentTime,
+                media,
+              ),
+            )
+            .toBeGreaterThan(0);
+        } else {
+          // Native-control start is NOT_VALIDATED in the no-bridge WebKit control; test the reload guard.
+          console.log('NOT_VALIDATED WebKit native control start:', surface, media);
+        }
+        await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+        await page
+          .frames()[1]
+          .evaluate('window.savedNativeFrame=document.querySelector("#untrusted")');
+        await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+        await expect(open).toBeVisible();
+        if (surface === 'app' && media === 'audio')
+          await page.screenshot({
+            path: 'node_modules/.cache/openmaic-1846/r2-guarded-' + browserName + '.png',
+          });
+        expect(native.isDetached()).toBe(true);
+        await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
+        await page.frames()[1].evaluate('document.body.append(window.savedNativeFrame)');
+        await expect(outer.locator('iframe#untrusted')).toHaveCount(0);
+        await expect(open).toBeVisible();
+        await open.click();
+        await expect(outer.frameLocator('#untrusted').locator(media)).toBeVisible();
+        await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+        expect(
+          await page
+            .frames()
+            .find((f) => f.name() === 'untrusted')!
+            .evaluate((kind) => document.querySelector<HTMLMediaElement>(kind)!.paused, media),
+        ).toBe(true);
+      });
+    }
+
+    test('guards URL child media with an unload before narration resumes', async ({ page }) => {
+      await page.route('http://external.test/nested', (route) =>
+        route.fulfill({
+          contentType: 'text/html',
+          body: `<button id="play" onclick="document.querySelector('audio').play();window.ctx=new AudioContext();const o=ctx.createOscillator();o.connect(ctx.destination);o.start();ctx.resume()">Play</button><audio src="${audio}" loop></audio>`,
+        }),
+      );
+      await page.goto('http://localhost/media-test');
+      await page.addScriptTag({ content: bundle(surface, false, false, 'url') });
+      const outer = page.frameLocator('iframe');
+      const open = outer.getByRole('button', { name: /External activity.*open/ });
+      await expect(open).toBeVisible();
+      await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+      await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
+      await open.click();
+      await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+      await outer.frameLocator('#untrusted').locator('#play').click();
+      const child = page.frames().find((f) => f.url() === 'http://external.test/nested')!;
+      await expect
+        .poll(() =>
+          child.evaluate(
+            '!document.querySelector("audio").paused && document.querySelector("audio").currentTime > 0 && window.ctx.state === "running"',
+          ),
+        )
+        .toBe(true);
+      await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'false');
+      await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+      await expect(open).toBeVisible();
+      expect(child.isDetached()).toBe(true);
+      await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
+      await open.click();
+      await expect(outer.frameLocator('#untrusted').locator('#play')).toBeVisible();
+      expect(
+        await page
+          .frames()
+          .find((f) => f.url() === 'http://external.test/nested')!
+          .evaluate('document.querySelector("audio").paused && typeof window.ctx === "undefined"'),
+      ).toBe(true);
     });
 
     test('continues both narration lines after a form navigates to an uninstrumented document', async ({
@@ -401,6 +532,32 @@ for (const surface of ['app', 'standalone'] as const) {
         await expect.poll(() => page.evaluate('window.destinationSpeechStarted')).toBe(true);
         await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
       });
+      for (const blocked of [false, true]) {
+        test(`recovers a retained lecture at a non-speech discussion cursor (blocked=${blocked})`, async ({
+          page,
+        }) => {
+          await finishFrameLoad(page);
+          await page.evaluate('prepareDiscussion()');
+          await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+          await expect.poll(() => page.evaluate('cursor()')).toBe(1);
+          await page.getByRole('button', { name: 'Pause', exact: true }).click();
+          expect(await page.evaluate('cursor()')).toBe(0);
+          if (blocked) await startUnresponsiveFrame(page);
+          await page.evaluate('prepareLiveLecture(true)');
+          await page.getByRole('button', { name: 'Return from Q&A', exact: true }).click();
+          if (blocked) {
+            await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+            expect(await page.evaluate('lectureText')).toBe('');
+            expect(await page.evaluate('lectureActions')).toBe(0);
+            await page.frames()[1].evaluate('window.blockMediaControls=false');
+            await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+          }
+          await expect.poll(() => page.evaluate('lectureText')).toBe('Continued lecture text');
+          await expect.poll(() => page.evaluate('lectureActions')).toBe(1);
+          await expect.poll(() => page.evaluate('window.proactive')).toBe('delayed');
+        });
+      }
+
       test('holds retained lecture text and actions through failed Q&A recovery and resumes on retry', async ({
         page,
       }) => {
@@ -620,8 +777,8 @@ for (const surface of ['app', 'standalone'] as const) {
       'createElement-video',
       'createElementNS-audio',
       'createElementNS-video',
-      ...['cloneNode', 'importNode', 'createContextualFragment', 'innerHTML'].flatMap((method) =>
-        ['audio', 'video'].map((tag) => `${method}-${tag}`),
+      ...['parser', 'cloneNode', 'importNode', 'createContextualFragment', 'innerHTML'].flatMap(
+        (method) => ['audio', 'video'].map((tag) => `${method}-${tag}`),
       ),
     ]) {
       test(`coordinates detached ${creation} playback and reuse`, async ({ page, browserName }) => {
@@ -630,9 +787,16 @@ for (const surface of ['app', 'standalone'] as const) {
           'Detached parser-created media does not start in the Chromium no-bridge native control.',
         );
         await finishFrameLoad(page);
+        const child = page.frames()[1];
+        if (creation.startsWith('parser-')) {
+          await page
+            .frameLocator('iframe')
+            .locator('#prime-' + creation)
+            .click();
+          await expect.poll(() => child.evaluate('window.parserPrimed')).toBe(true);
+        }
         await page.getByRole('button', { name: 'Narrate', exact: true }).click();
         await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
-        const child = page.frames()[1];
         for (let i = 0; i < 2; i++) {
           const starts = await child.evaluate<number>('window.autoplayEvents');
           await page
@@ -734,12 +898,12 @@ for (const surface of ['app', 'standalone'] as const) {
       await page.getByRole('button', { name: 'Navigate', exact: true }).click();
       if (surface === 'app') {
         await expect
-          .poll(() => old.locator('audio').evaluate((x: HTMLAudioElement) => x.paused))
+          .poll(() => old.locator('#a').evaluate((x: HTMLAudioElement) => x.paused))
           .toBe(true);
         // A hidden keep-alive page trying to restart itself must stay silent.
-        await old.locator('audio').evaluate((x: HTMLAudioElement) => x.play().catch(() => {}));
+        await old.locator('#a').evaluate((x: HTMLAudioElement) => x.play().catch(() => {}));
         await expect
-          .poll(() => old.locator('audio').evaluate((x: HTMLAudioElement) => x.paused))
+          .poll(() => old.locator('#a').evaluate((x: HTMLAudioElement) => x.paused))
           .toBe(true);
       } else await expect.poll(() => old.isDetached()).toBe(true);
       await page.getByRole('button', { name: 'Navigate', exact: true }).click();
@@ -747,7 +911,7 @@ for (const surface of ['app', 'standalone'] as const) {
         .poll(() =>
           page
             .frames()[1]
-            .locator('audio')
+            .locator('#a')
             .evaluate((x: HTMLAudioElement) => x.paused),
         )
         .toBe(true);

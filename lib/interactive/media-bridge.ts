@@ -13,27 +13,68 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
   var enabled = true;
   var generation = 0;
   var children = new Map();
+  var uninstrumented = new Map();
   var childGeneration = 0;
   var childRequest = 0;
   function syncChild(child) {
     child.frame.contentWindow.postMessage({ type: 'maic:media:control:v1', documentId: child.id, generation: child.generation, action: 'sync', enabled: enabled }, '*');
     if (child.pending) child.frame.contentWindow.postMessage({ type: 'maic:media:control:v1', documentId: child.id, generation: child.generation, action: 'pause', requestId: child.pending.id }, '*');
   }
+  function childDocumentId(frame) {
+    var sandbox = frame.getAttribute('sandbox');
+    if (sandbox !== null && !/(?:^|[\t\n\f\r ])allow-scripts(?:[\t\n\f\r ]|$)/i.test(sandbox)) return null;
+    var match = (frame.getAttribute('srcdoc') || '').match(/<script data-maic-media-document="([a-zA-Z0-9_-]+)">/);
+    return match ? match[1] : null;
+  }
+  function parkChild(child) {
+    child.active = false;
+    child.button.disabled = !enabled;
+    if (child.frame.parentNode) child.frame.parentNode.replaceChild(child.button, child.frame);
+  }
+  function guardUninstrumented(frame) {
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.id = frame.id;
+    button.className = frame.className;
+    button.style.cssText = frame.style.cssText;
+    if (!button.style.width) button.style.width = (frame.offsetWidth || 300) + 'px';
+    if (!button.style.height) button.style.height = (frame.offsetHeight || 150) + 'px';
+    button.textContent = (frame.title || 'Embedded page') + ' — open (pauses narration; reloads after resume)';
+    var child = { frame: frame, button: button, active: false };
+    child.open = function () {
+      if (!enabled || !button.parentNode) return;
+      // shortcut: opaque children reload; preserve state when they can acknowledge media controls.
+      report(0, true);
+      child.active = true;
+      button.parentNode.replaceChild(frame, button);
+    };
+    button.addEventListener('click', child.open);
+    uninstrumented.set(frame, child);
+    parkChild(child);
+  }
   function scanChildren() {
-    var frames = new Set(document.querySelectorAll('iframe[srcdoc]'));
+    var frames = new Set(document.querySelectorAll('iframe'));
+    uninstrumented.forEach(function (child, frame) {
+      if (frame.isConnected && !child.active) parkChild(child);
+      child.button.disabled = !enabled;
+      if (!child.button.isConnected && !frame.isConnected) {
+        child.button.removeEventListener('click', child.open);
+        uninstrumented.delete(frame);
+      }
+    });
     children.forEach(function (child, frame) {
-      var match = (frame.getAttribute('srcdoc') || '').match(/<script data-maic-media-document="([a-zA-Z0-9_-]+)">/);
-      if (!frames.has(frame) || !match || match[1] !== child.id) {
+      var id = childDocumentId(frame);
+      if (!frames.has(frame) || id !== child.id) {
         frame.removeEventListener('load', child.load);
         children.delete(frame);
         if (child.pending) child.pending.finish(true);
       }
     });
     frames.forEach(function (frame) {
-      if (children.has(frame) || !frame.contentWindow) return;
-      var match = (frame.getAttribute('srcdoc') || '').match(/<script data-maic-media-document="([a-zA-Z0-9_-]+)">/);
-      if (!match) return;
-      var child = { frame: frame, id: match[1], generation: ++childGeneration, playing: false, pending: null };
+      if (children.has(frame) || uninstrumented.has(frame) || !frame.contentWindow) return;
+      var id = childDocumentId(frame);
+      if (!id) { guardUninstrumented(frame); return; }
+      var child = { frame: frame, id: id, generation: ++childGeneration, playing: false, pending: null };
       child.load = function () { child.generation = ++childGeneration; child.playing = false; syncChild(child); };
       children.set(frame, child);
       frame.addEventListener('load', child.load);
@@ -58,11 +99,13 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
       type: 'maic:media:state:v1', documentId: documentId, generation: generation, requestId: requestId || 0,
       playing: !!unsilenced || Array.from(media).some(function (element) { return !element.paused && !element.ended; }) ||
         Array.from(contexts).some(function (context) { return context.state === 'running'; }) ||
-        Array.from(children.values()).some(function (child) { return child.playing; })
+        Array.from(children.values()).some(function (child) { return child.playing; }) ||
+        Array.from(uninstrumented.values()).some(function (child) { return child.frame.isConnected; })
     }, '*');
   }
   function pause() {
     scanChildren();
+    uninstrumented.forEach(parkChild);
     media.forEach(function (element) { element.pause(); });
     return Promise.all(Array.from(contexts).map(function (context) {
       if (context.state !== 'running') return Promise.resolve();
@@ -130,6 +173,7 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
   }
   function started(event) {
     if (event.target instanceof HTMLMediaElement) {
+      observe(event.target);
       if (!event.target.paused && !event.target.ended && !event.target.error) watch(event.target);
       changed();
     }
@@ -249,7 +293,7 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
       changed();
     }
   });
-  if (typeof MutationObserver !== 'undefined') new MutationObserver(scanChildren).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ['srcdoc'] });
+  if (typeof MutationObserver !== 'undefined') new MutationObserver(scanChildren).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ['srcdoc', 'sandbox'] });
   scanChildren();
   report();
 })(__DOCUMENT_ID__);`;

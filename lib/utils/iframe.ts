@@ -389,17 +389,24 @@ const ELEMENT_PICKER_SHIM = `<script data-iframe-element-picker-shim>
  * Omitted by consumers that produce standalone documents (video export), where
  * no parent ever asks and the bytes count against an export size cap.
  */
-function patchNestedMedia(html: string, documentId: string): string {
+const MAX_MEDIA_SRCDOC_DEPTH = 4;
+
+function patchNestedMedia(html: string, documentId: string, depth = 0): string {
   const patches: Array<{ start: number; end: number; replacement: string }> = [];
   let childIndex = 0;
-  const visit = (node: DefaultTreeAdapterTypes.Node) => {
+  const nodes: DefaultTreeAdapterTypes.Node[] = [parse(html, { sourceCodeLocationInfo: true })];
+  while (nodes.length) {
+    const node = nodes.pop()!;
     if ('tagName' in node && node.tagName === 'iframe') {
       const srcdoc = node.attrs.find((attr) => attr.name === 'srcdoc');
       const range = node.sourceCodeLocation?.attrs?.srcdoc;
-      if (srcdoc && range) {
+      const sandbox = node.attrs.find((attr) => attr.name === 'sandbox');
+      const scriptsAllowed =
+        !sandbox || /(?:^|[\t\n\f\r ])allow-scripts(?:[\t\n\f\r ]|$)/i.test(sandbox.value);
+      if (srcdoc && range && scriptsAllowed && depth < MAX_MEDIA_SRCDOC_DEPTH) {
         const childId = `${documentId.slice(0, 100)}_${++childIndex}`;
         const child = injectIntoDocumentHead(
-          patchNestedMedia(srcdoc.value, childId),
+          patchNestedMedia(srcdoc.value, childId, depth + 1),
           mediaBridgeScript(childId),
         );
         patches.push({
@@ -409,10 +416,10 @@ function patchNestedMedia(html: string, documentId: string): string {
         });
       }
     }
-    if ('childNodes' in node) node.childNodes.forEach(visit);
-    if ('content' in node) visit(node.content);
-  };
-  visit(parse(html, { sourceCodeLocationInfo: true }));
+    if ('content' in node) nodes.push(node.content);
+    if ('childNodes' in node)
+      for (let i = node.childNodes.length - 1; i >= 0; i--) nodes.push(node.childNodes[i]);
+  }
   for (const patch of patches.sort((a, b) => b.start - a.start))
     html = html.slice(0, patch.start) + patch.replacement + html.slice(patch.end);
   return html;
