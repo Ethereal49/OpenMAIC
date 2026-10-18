@@ -41,11 +41,14 @@ const playing = { type: 'maic:media:state:v1', documentId: 'current', requestId:
 
 function bridgeFixture() {
   const observers: Array<(records: Array<{ addedNodes: EventTarget[] }>) => void> = [];
+  const observedRoots: unknown[] = [];
   class Observer {
     constructor(callback: (records: Array<{ addedNodes: EventTarget[] }>) => void) {
       observers.push(callback);
     }
-    observe() {}
+    observe(root: unknown) {
+      observedRoots.push(root);
+    }
   }
   const sets: Set<unknown>[] = [];
   class TrackedSet extends Set<unknown> {
@@ -100,6 +103,43 @@ function bridgeFixture() {
       return Promise.resolve();
     }
   }
+  class Utterance extends EventTarget {}
+  class Synthesis {
+    speaking = false;
+    pending = false;
+    paused = false;
+    refuseCancel = false;
+    queue: Utterance[] = [];
+    speak(utterance: Utterance) {
+      if (!(utterance instanceof Utterance)) throw new TypeError('invalid utterance');
+      this.queue.push(utterance);
+      this.pending = this.paused || this.queue.length > 1;
+      if (!this.paused) this.speaking = true;
+    }
+    cancel() {
+      if (this.refuseCancel) return;
+      this.queue = [];
+      this.speaking = false;
+      this.pending = false;
+    }
+    pause() {
+      this.paused = true;
+      this.queue[0]?.dispatchEvent(new Event('pause'));
+    }
+    resume() {
+      this.paused = false;
+      this.speaking = this.queue.length > 0;
+      this.queue[0]?.dispatchEvent(new Event('resume'));
+    }
+    finish(type: string) {
+      const utterance = this.queue.shift()!;
+      this.speaking = this.queue.length > 0;
+      this.pending = this.queue.length > 1;
+      utterance.dispatchEvent(new Event(type));
+    }
+  }
+  const synthesis = new Synthesis();
+  const nativeSpeak = vi.spyOn(Synthesis.prototype, 'speak');
   function NativeAudio(src = ''): Media {
     return Object.assign(Reflect.construct(Media, [], new.target || NativeAudio), { src });
   }
@@ -108,6 +148,14 @@ function bridgeFixture() {
     style = { cssText: '', width: '', height: '' };
     parentNode: FrameElement | null = null;
     elements: Media[] = [];
+    hosts: FrameElement[] = [];
+    frames: FrameDocument['frames'] = [];
+    shadowRoot: FrameElement | null = null;
+    attachShadow() {
+      if (this.shadowRoot) throw new Error('already attached');
+      this.shadowRoot = new FrameElement();
+      return this.shadowRoot;
+    }
     private html = '';
     get innerHTML() {
       return this.html;
@@ -117,7 +165,9 @@ function bridgeFixture() {
       this.html = html;
       this.elements = [new Media()];
     }
-    querySelectorAll() {
+    querySelectorAll(selector?: string) {
+      if (selector === 'iframe') return this.frames;
+      if (selector === '*') return this.hosts;
       return this.elements;
     }
     insertAdjacentHTML(position: string, html: string) {
@@ -146,8 +196,9 @@ function bridgeFixture() {
       addEventListener: ReturnType<typeof vi.fn>;
       removeEventListener: ReturnType<typeof vi.fn>;
     }> = [];
-    querySelectorAll() {
-      return this.frames;
+    hosts: FrameElement[] = [];
+    querySelectorAll(selector?: string) {
+      return selector === '*' ? this.hosts : this.frames;
     }
     createElement(name: string, _options?: unknown): EventTarget {
       return ['audio', 'video'].includes(name.toLowerCase()) ? new Media() : new FrameElement();
@@ -163,7 +214,13 @@ function bridgeFixture() {
     parent: { postMessage: ReturnType<typeof vi.fn> };
   };
   frameWindow.parent = { postMessage: vi.fn() };
-  Object.assign(frameWindow, { AudioContext: Context, Audio: NativeAudio });
+  Object.assign(frameWindow, {
+    AudioContext: Context,
+    Audio: NativeAudio,
+    SpeechSynthesis: Synthesis,
+  });
+  const getSynthesis = vi.fn(() => synthesis);
+  Object.defineProperty(frameWindow, 'speechSynthesis', { get: getSynthesis });
   const script = mediaBridgeScript('test').replace(/^<script[^>]*>|<\/script>$/g, '');
   const frameDocument = new FrameDocument();
   const nativePlay = vi.spyOn(frameDocument, 'addEventListener');
@@ -196,6 +253,7 @@ function bridgeFixture() {
     nativeInsert,
     Parser,
     frameDocument,
+    observedRoots,
     added: (...elements: EventTarget[]) =>
       observers.forEach((callback) => callback([{ addedNodes: elements }])),
     Audio: (frameWindow as unknown as { Audio: AudioFactory }).Audio,
@@ -210,6 +268,10 @@ function bridgeFixture() {
       )?.({ isTrusted: true } as Event),
     media: sets[0],
     frameWindow,
+    synthesis,
+    Utterance,
+    nativeSpeak,
+    getSynthesis,
     nativePlay: (element: Media) =>
       (nativePlay.mock.calls.find(([type]) => type === 'play')![1] as EventListener)({
         target: element,
@@ -218,6 +280,134 @@ function bridgeFixture() {
 }
 
 describe('injected media lifetime', () => {
+  it('does not initialize native synthesis in frames that never use it', () => {
+    const { getSynthesis, synthesis, Utterance, frameWindow } = bridgeFixture();
+    expect(getSynthesis).not.toHaveBeenCalled();
+    synthesis.speak(new Utterance());
+    expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ playing: true }),
+      '*',
+    );
+  });
+  it('reports native synthesis start, pause, resume, end and error without retaining idle utterances', () => {
+    const { synthesis, Utterance, frameWindow, nativeSpeak } = bridgeFixture();
+    const utterance = new Utterance();
+    const authoredEnd = vi.fn();
+    utterance.addEventListener('end', authoredEnd);
+    expect(synthesis.speak(utterance)).toBeUndefined();
+    expect(nativeSpeak.mock.contexts[0]).toBe(synthesis);
+    expect(nativeSpeak.mock.calls[0]).toEqual([utterance]);
+    expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ playing: true }),
+      '*',
+    );
+    synthesis.pause();
+    expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ playing: false }),
+      '*',
+    );
+    synthesis.resume();
+    expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ playing: true }),
+      '*',
+    );
+    synthesis.finish('end');
+    expect(authoredEnd).toHaveBeenCalledOnce();
+    expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ playing: false }),
+      '*',
+    );
+    frameWindow.parent.postMessage.mockClear();
+    utterance.dispatchEvent(new Event('start'));
+    expect(frameWindow.parent.postMessage).not.toHaveBeenCalled();
+    synthesis.speak(utterance);
+    synthesis.finish('error');
+    expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ playing: false }),
+      '*',
+    );
+    expect(() => synthesis.speak(null as unknown as InstanceType<typeof Utterance>)).toThrow(
+      TypeError,
+    );
+  });
+
+  it('cancels active and queued native synthesis before acknowledging silence', async () => {
+    const { synthesis, Utterance, control, frameWindow } = bridgeFixture();
+    synthesis.speak(new Utterance());
+    synthesis.speak(new Utterance());
+    expect(synthesis.pending).toBe(true);
+    control({ action: 'pause', requestId: 7 });
+    await Promise.resolve();
+    expect(synthesis.queue).toHaveLength(0);
+    expect(synthesis.speaking).toBe(false);
+    expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ requestId: 7, playing: false }),
+      '*',
+    );
+  });
+
+  it('keeps hidden synthesis silent and does not revive a cancelled paused queue', () => {
+    const { synthesis, Utterance, control, frameWindow } = bridgeFixture();
+    synthesis.pause();
+    synthesis.speak(new Utterance());
+    control({ action: 'sync', enabled: false });
+    expect(synthesis.queue).toHaveLength(0);
+    expect(synthesis.paused).toBe(true);
+    control({ action: 'sync', enabled: true });
+    synthesis.resume();
+    expect(synthesis.speaking).toBe(false);
+    control({ action: 'sync', enabled: false });
+    synthesis.speak(new Utterance());
+    expect(synthesis.speaking).toBe(false);
+    expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ playing: false }),
+      '*',
+    );
+  });
+
+  it('does not acknowledge silence if native synthesis cancellation leaves speech running', async () => {
+    const { synthesis, Utterance, control, frameWindow } = bridgeFixture();
+    synthesis.speak(new Utterance());
+    synthesis.refuseCancel = true;
+    control({ action: 'pause', requestId: 8 });
+    await Promise.resolve();
+    expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ requestId: 8, playing: true }),
+      '*',
+    );
+  });
+
+  it('discovers nested frames in existing open shadow roots', () => {
+    const { frameDocument, FrameElement, control } = bridgeFixture();
+    const host = new FrameElement();
+    const root = host.attachShadow();
+    const nestedHost = new FrameElement();
+    const nestedRoot = nestedHost.attachShadow();
+    root.hosts.push(nestedHost);
+    frameDocument.hosts.push(host);
+    const postMessage = vi.fn();
+    nestedRoot.frames.push({
+      contentWindow: { postMessage },
+      getAttribute: (name) => (name === 'srcdoc' ? mediaBridgeScript('shadow-child') : null),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    control({ action: 'sync', enabled: true });
+    expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ documentId: 'shadow-child', action: 'sync' }),
+      '*',
+    );
+  });
+
+  it('observes a newly attached shadow root before its children are inserted', () => {
+    const { FrameElement, observedRoots } = bridgeFixture();
+    const host = new FrameElement();
+    const root = host.attachShadow();
+    expect(host.shadowRoot).toBe(root);
+    expect(observedRoots).toContain(root);
+    expect(() => host.attachShadow()).toThrow('already attached');
+  });
+
   it('restores an unresponsive nested source once and accepts its new generation', async () => {
     vi.useFakeTimers();
     const { frameDocument, frameWindow, control } = bridgeFixture();

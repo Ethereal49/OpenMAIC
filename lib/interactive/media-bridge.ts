@@ -10,12 +10,23 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
   var contexts = new Set();
   var suspended = new Set();
   var contextState = new WeakMap();
+  var Synthesis = window.SpeechSynthesis;
+  // Unused child instances can disrupt WebKit's native speech events; capture only authored use.
+  var synthesis;
+  var cancelSynthesis = Synthesis && Synthesis.prototype.cancel;
   var enabled = true;
   var generation = 0;
   var children = new Map();
   var uninstrumented = new Map();
   var childGeneration = 0;
   var childRequest = 0;
+  var observer;
+  var observation = { childList: true, subtree: true, attributes: true, attributeFilter: ['srcdoc', 'sandbox'] };
+  function observeRoot(root) {
+    if (observer) observer.observe(root, observation);
+    observe(root);
+    return root;
+  }
   function syncChild(child) {
     child.frame.contentWindow.postMessage({ type: 'maic:media:control:v1', documentId: child.id, generation: child.generation, action: 'sync', enabled: enabled }, '*');
     if (child.pending) child.frame.contentWindow.postMessage({ type: 'maic:media:control:v1', documentId: child.id, generation: child.generation, action: 'pause', requestId: child.pending.id }, '*');
@@ -53,7 +64,14 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
     parkChild(child);
   }
   function scanChildren() {
-    var frames = new Set(document.querySelectorAll('iframe'));
+    var frames = new Set();
+    function scan(root) {
+      root.querySelectorAll('iframe').forEach(function (frame) { frames.add(frame); });
+      root.querySelectorAll('*').forEach(function (element) {
+        if (element.shadowRoot) scan(observeRoot(element.shadowRoot));
+      });
+    }
+    scan(document);
     uninstrumented.forEach(function (child, frame) {
       if (frame.isConnected && !child.active) parkChild(child);
       child.button.disabled = !enabled;
@@ -113,7 +131,8 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
     suspended.forEach(function (ref) { if (!ref.deref()) suspended.delete(ref); });
     window.parent.postMessage({
       type: 'maic:media:state:v1', documentId: documentId, generation: generation, requestId: requestId || 0,
-      playing: !!unsilenced || Array.from(media).some(function (element) { return !element.paused && !element.ended; }) ||
+      playing: !!unsilenced || !!(synthesis && !synthesis.paused && (synthesis.speaking || synthesis.pending)) ||
+        Array.from(media).some(function (element) { return !element.paused && !element.ended; }) ||
         Array.from(contexts).some(function (context) { return context.state === 'running'; }) ||
         Array.from(children.values()).some(function (child) { return child.playing; }) ||
         Array.from(uninstrumented.values()).some(function (child) { return child.frame.isConnected; })
@@ -123,6 +142,7 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
     scanChildren();
     uninstrumented.forEach(parkChild);
     media.forEach(function (element) { element.pause(); });
+    if (synthesis && (synthesis.speaking || synthesis.pending)) cancelSynthesis.call(synthesis);
     return Promise.all(Array.from(contexts).map(function (context) {
       if (context.state !== 'running') return Promise.resolve();
       var state = contextState.get(context);
@@ -239,6 +259,10 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
       return result;
     }
   });
+  var attachShadow = typeof Element !== 'undefined' && Element.prototype.attachShadow;
+  if (attachShadow) Element.prototype.attachShadow = new Proxy(attachShadow, {
+    apply: function (target, receiver, args) { return observeRoot(Reflect.apply(target, receiver, args)); }
+  });
   var Audio = window.Audio;
   if (Audio) window.Audio = new Proxy(Audio, {
     apply: function (target, receiver, args) {
@@ -256,6 +280,34 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
     try { return play.call(element).catch(failed); }
     catch (error) { return failed(error); }
   };
+  function speechEnded(event) {
+    ['start', 'pause', 'resume'].forEach(function (type) { event.target.removeEventListener(type, changed); });
+    ['end', 'error'].forEach(function (type) { event.target.removeEventListener(type, speechEnded); });
+    changed();
+  }
+  if (Synthesis) {
+    Synthesis.prototype.speak = new Proxy(Synthesis.prototype.speak, {
+      apply: function (target, receiver, args) {
+        var result = Reflect.apply(target, receiver, args);
+        if (receiver instanceof Synthesis) {
+          synthesis = receiver;
+          ['start', 'pause', 'resume'].forEach(function (type) { args[0].addEventListener(type, changed); });
+          ['end', 'error'].forEach(function (type) { args[0].addEventListener(type, speechEnded); });
+          changed();
+        }
+        return result;
+      }
+    });
+    ['pause', 'resume', 'cancel'].forEach(function (method) {
+      Synthesis.prototype[method] = new Proxy(Synthesis.prototype[method], {
+        apply: function (target, receiver, args) {
+          var result = Reflect.apply(target, receiver, args);
+          if (receiver instanceof Synthesis) { synthesis = receiver; changed(); }
+          return result;
+        }
+      });
+    });
+  }
   ['AudioContext', 'webkitAudioContext'].forEach(function (name) {
     var Native = window[name];
     if (!Native) return;
@@ -319,11 +371,13 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
       changed();
     }
   });
-  if (typeof MutationObserver !== 'undefined') new MutationObserver(function (records) {
+  if (typeof MutationObserver !== 'undefined') {
+    observer = new MutationObserver(function (records) {
     records.forEach(function (record) { record.addedNodes.forEach(observe); });
     scanChildren();
-  }).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ['srcdoc', 'sandbox'] });
-  observe(document);
+    });
+  }
+  observeRoot(document);
   scanChildren();
   report();
 })(__DOCUMENT_ID__);`;

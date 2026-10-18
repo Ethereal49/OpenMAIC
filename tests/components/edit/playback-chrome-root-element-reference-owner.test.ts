@@ -765,6 +765,7 @@ describe('PlaybackChromeRoot element-reference ownership', () => {
     act(() => ownerRef.current?.pauseForInteractiveMedia());
     expect(mocks.enginePause).toHaveBeenCalledOnce();
     expect(mocks.pauseActiveLiveBuffer).toHaveBeenCalledOnce();
+    expect(mocks.pauseActiveLiveBuffer).toHaveBeenCalledWith(false);
     expect(mocks.discussionPause).toHaveBeenCalledOnce();
   });
 
@@ -791,6 +792,7 @@ describe('PlaybackChromeRoot element-reference ownership', () => {
     await renderOwner({ ref: ownerRef });
     act(() => ownerRef.current?.pauseForInteractiveMedia());
     expect(mocks.enginePause).not.toHaveBeenCalled();
+    expect(mocks.pauseActiveLiveBuffer).toHaveBeenCalledWith(true);
     expect(mocks.discussionPause).toHaveBeenCalledOnce();
     await act(async () => (mocks.roundtableProps?.onDiscussionResume as () => Promise<void>)());
     expect(mocks.engineMode).toBe('live');

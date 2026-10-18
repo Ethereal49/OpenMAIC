@@ -287,7 +287,10 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
     const discussionTTS = useDiscussionTTS({
       beforePlayback: pauseInteractiveMedia,
       onPlaybackBlocked: () => {
-        if (chatAreaRef.current?.pauseActiveLiveBuffer() || engineRef.current?.getMode() === 'live')
+        if (
+          chatAreaRef.current?.pauseActiveLiveBuffer(engineRef.current?.getMode() === 'live') ||
+          engineRef.current?.getMode() === 'live'
+        )
           setIsDiscussionPaused(true);
       },
       enabled: ttsEnabled && !ttsMuted,
@@ -607,7 +610,10 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
             if (lectureSessionIdRef.current)
               chatAreaRef.current?.pauseBuffer(lectureSessionIdRef.current);
           }
-          if (chatAreaRef.current?.pauseActiveLiveBuffer() || engine?.getMode() === 'live') {
+          if (
+            chatAreaRef.current?.pauseActiveLiveBuffer(engine?.getMode() === 'live') ||
+            engine?.getMode() === 'live'
+          ) {
             discussionTTS.pause();
             setIsDiscussionPaused(true);
           }
@@ -1937,7 +1943,9 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
                   // No isDiscussionPaused guard — always attempt to pause the buffer.
                   // The return value ensures UI state stays in sync with buffer state.
                   if (chatSessionType === 'qa' || chatSessionType === 'discussion') {
-                    const paused = chatAreaRef.current?.pauseActiveLiveBuffer();
+                    const paused = chatAreaRef.current?.pauseActiveLiveBuffer(
+                      engineRef.current?.getMode() === 'live',
+                    );
                     if (paused) {
                       discussionTTS.pause();
                       setIsDiscussionPaused(true);
@@ -1952,7 +1960,9 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
                 onPlayPause={handlePlayPause}
                 isDiscussionPaused={isDiscussionPaused}
                 onDiscussionPause={() => {
-                  const paused = chatAreaRef.current?.pauseActiveLiveBuffer();
+                  const paused = chatAreaRef.current?.pauseActiveLiveBuffer(
+                    engineRef.current?.getMode() === 'live',
+                  );
                   if (paused) {
                     discussionTTS.pause();
                     setIsDiscussionPaused(true);

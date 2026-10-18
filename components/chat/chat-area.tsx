@@ -75,7 +75,7 @@ export interface ChatAreaRef {
   getLectureMessageId: (sessionId: string) => string | null;
   pauseBuffer: (sessionId: string) => void;
   resumeBuffer: (sessionId: string) => void;
-  pauseActiveLiveBuffer: () => boolean;
+  pauseActiveLiveBuffer: (includePendingSession?: boolean) => boolean;
   resumeActiveLiveBuffer: () => void;
   switchToTab: (tab: 'lecture' | 'chat') => void;
 }

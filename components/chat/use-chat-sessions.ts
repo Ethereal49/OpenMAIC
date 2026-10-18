@@ -75,6 +75,7 @@ export interface SessionCleanupPayload {
 
 export interface EndSessionOptions {
   source?: CleanupSource;
+  preserveLivePause?: boolean;
 }
 
 export const MANUAL_STOP_END_OPTIONS: EndSessionOptions = { source: 'manual_stop' };
@@ -1341,7 +1342,7 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
       log.info(`[ChatArea] Ending session: ${sessionId}`);
       clearSoftCloseRegistration(sessionId);
       softCloseLifecycleRef.current.set(sessionId, 'completed');
-      livePausedRef.current = false;
+      if (!options.preserveLivePause) livePausedRef.current = false;
 
       const session = sessionsRef.current.find((s) => s.id === sessionId);
       const isLiveSession = session && (session.type === 'qa' || session.type === 'discussion');
@@ -1712,7 +1713,7 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
         // End all active QA/Discussion sessions before creating new one
         const activeQAOrDiscussion = sessionsRef.current.filter(isOpenLiveSession);
         for (const session of activeQAOrDiscussion) {
-          await endSession(session.id);
+          await endSession(session.id, { preserveLivePause: true });
         }
         sessionId = await createSession('qa', 'Q&A');
       } else if (sessionId && activeSession?.status === 'soft-closing') {
@@ -1867,7 +1868,7 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
       // Auto-end previous active QA/Discussion sessions to ensure only one is active
       const activeQAOrDiscussion = sessionsRef.current.filter(isOpenLiveSession);
       for (const session of activeQAOrDiscussion) {
-        await endSession(session.id);
+        await endSession(session.id, { preserveLivePause: true });
       }
 
       const sessionId = `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -2128,11 +2129,11 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
     if (buf) buf.resume();
   }, []);
 
-  /** Pause the active live (QA/Discussion) buffer and set sticky intent. Returns true if paused. */
-  const pauseActiveLiveBuffer = useCallback((): boolean => {
+  /** Include pending live intent only when its caller has entered live mode. */
+  const pauseActiveLiveBuffer = useCallback((includePendingSession = false): boolean => {
     const active = sessionsRef.current.find(isOpenLiveSession);
+    if (active || includePendingSession) livePausedRef.current = true;
     if (!active) return false;
-    livePausedRef.current = true;
     const buf = buffersRef.current.get(active.id);
     if (buf && !buf.disposed) buf.pause();
     log.info('[ChatArea] Buffer-paused discussion:', active.id);
@@ -2141,9 +2142,9 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
 
   /** Resume the active live (QA/Discussion) buffer and clear sticky intent. */
   const resumeActiveLiveBuffer = useCallback(() => {
+    livePausedRef.current = false;
     const active = sessionsRef.current.find(isOpenLiveSession);
     if (!active) return;
-    livePausedRef.current = false;
     const buf = buffersRef.current.get(active.id);
     if (buf) buf.resume();
     log.info('[ChatArea] Buffer-resumed discussion:', active.id);
