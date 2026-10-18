@@ -600,9 +600,11 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
         },
         pauseForInteractiveMedia: () => {
           const engine = engineRef.current;
-          if (engine?.getMode() === 'playing') engine.pause();
-          if (lectureSessionIdRef.current)
-            chatAreaRef.current?.pauseBuffer(lectureSessionIdRef.current);
+          if (engine?.getMode() === 'playing') {
+            engine.pause();
+            if (lectureSessionIdRef.current)
+              chatAreaRef.current?.pauseBuffer(lectureSessionIdRef.current);
+          }
           if (chatAreaRef.current?.pauseActiveLiveBuffer() || engine?.getMode() === 'live') {
             discussionTTS.pause();
             setIsDiscussionPaused(true);

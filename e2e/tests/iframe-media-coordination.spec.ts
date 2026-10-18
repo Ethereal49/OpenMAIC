@@ -86,6 +86,7 @@ return <><button onClick={p.play}>Narrate</button><button onClick={p.pause}>Paus
     : `
 import {PlaybackEngine} from './lib/playback/engine';
 import {AudioPlayer} from './lib/utils/audio-player';
+import {StreamBuffer} from './lib/buffer/stream-buffer';
 import {useWidgetIframeStore} from './lib/store/widget-iframe';
 import {GENUI_LOGICAL_WIDTH,GENUI_LOGICAL_HEIGHT,fitGenUiViewport} from './lib/interactive/logical-viewport';
 import {intersectClientBoxes} from './lib/edit/visible-client-rect';
@@ -102,7 +103,17 @@ window.cursor=()=>engineRef.current.getSnapshot().actionIndex;
 window.prepareDiscussion=()=>currentScene.actions.unshift({id:'delayed',type:'discussion',topic:'Question',prompt:'Discuss'});
 window.skipDiscussion=()=>engineRef.current.skipDiscussion();
 window.finishInterruption=()=>{engineRef.current.handleUserInterrupt('A question');engineRef.current.handleEndDiscussion();};
-function App(){const [visible,setVisible]=useState(true);return <><button onClick={()=>engineRef.current.getMode()==='idle'?engineRef.current.start():engineRef.current.resume()}>Narrate</button><button onClick={()=>engineRef.current.continuePlayback()}>Continue lecture</button><button onClick={()=>engineRef.current.pause()}>Pause</button><button onClick={()=>{engineRef.current.stop();setVisible(!visible)}}>Navigate</button><PooledIframe onMediaPlay={onMediaPlay} sceneId="s" entry={{srcDoc:html,rect:{left:0,top:100,width:1280,height:720},clip:{left:0,top:100,width:1280,height:720},owner:'o'}} visible={visible} playbackArmed={false}/></>}
+window.prepareLiveLecture=()=>{
+  window.lectureText='';window.lectureActions=0;
+  const callbacks={onAgentStart(){},onAgentEnd(){},onTextReveal(_id,_part,text){window.lectureText=text},onActionReady(){window.lectureActions++},onLiveSpeech(){},onSpeechProgress(){},onThinking(){},onCueUser(){},onDone(){},onError(message){throw new Error(message)}};
+  const lecture=new StreamBuffer(callbacks,{charsPerTick:100});lecture.start();
+  const live=new StreamBuffer(callbacks);lectureSessionIdRef.current='lecture';
+  chatAreaRef.current={pauseBuffer(){lecture.pause()},pauseActiveLiveBuffer(){live.pause();return true}};
+  window.liveBufferPaused=()=>live.paused;
+  engineRef.current.handleUserInterrupt('A question');
+  window.returnFromLive=()=>{live.resume();engineRef.current.handleEndDiscussion();engineRef.current.continuePlayback();lecture.pushText('lecture','Continued lecture text');lecture.pushAction({messageId:'lecture',actionId:'continued',actionName:'spotlight',params:{},agentId:'teacher'});};
+};
+function App(){const [visible,setVisible]=useState(true);return <><button onClick={()=>engineRef.current.getMode()==='idle'?engineRef.current.start():engineRef.current.resume()}>Narrate</button><button onClick={()=>engineRef.current.continuePlayback()}>Continue lecture</button><button onClick={()=>window.returnFromLive()}>Return from Q&A</button><button onClick={()=>engineRef.current.pause()}>Pause</button><button onClick={()=>{engineRef.current.stop();setVisible(!visible)}}>Navigate</button><PooledIframe onMediaPlay={onMediaPlay} sceneId="s" entry={{srcDoc:html,rect:{left:0,top:100,width:1280,height:720},clip:{left:0,top:100,width:1280,height:720},owner:'o'}} visible={visible} playbackArmed={false}/></>}
 `
 }
 window.narrationPaused=()=>window.audios[0]?.paused??true;
@@ -243,6 +254,22 @@ for (const surface of ['app', 'standalone'] as const) {
     });
 
     if (surface === 'app') {
+      test('keeps continued lecture text and actions flowing after iframe media pauses live Q&A', async ({
+        page,
+      }) => {
+        await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+        await expect.poll(() => page.evaluate('narrationPaused()')).toBe(false);
+        await page.evaluate('prepareLiveLecture()');
+        expect(await page.evaluate('mode()')).toBe('live');
+        await page.frameLocator('iframe').locator('#audio').click();
+        await expect.poll(() => page.evaluate('liveBufferPaused()')).toBe(true);
+        expect(await page.evaluate('mode()')).toBe('live');
+        await page.getByRole('button', { name: 'Return from Q&A', exact: true }).click();
+        await expect.poll(() => page.evaluate('lectureText')).toBe('Continued lecture text');
+        await expect.poll(() => page.evaluate('lectureActions')).toBe(1);
+        await expect.poll(() => page.evaluate('narrationPaused()')).toBe(false);
+      });
+
       test('restores the second speech after a composer interruption during frame silence preflight', async ({
         page,
       }) => {

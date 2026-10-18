@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => ({
   endSession: vi.fn(),
   engineStop: vi.fn(),
   enginePause: vi.fn(),
+  pauseBuffer: vi.fn(),
   pauseActiveLiveBuffer: vi.fn(),
   discussionPause: vi.fn(),
   discussionResume: vi.fn(),
@@ -275,7 +276,7 @@ vi.mock('@/components/chat/chat-area', async () => {
         stopActiveSession: vi.fn(),
         continueActiveSoftClosingSession: vi.fn(),
         getActiveSessionType: vi.fn(),
-        pauseBuffer: vi.fn(),
+        pauseBuffer: mocks.pauseBuffer,
         resumeBuffer: vi.fn(),
         resumeActiveSession: vi.fn(),
       }));
@@ -418,6 +419,7 @@ describe('PlaybackChromeRoot element-reference ownership', () => {
     mocks.endSession.mockResolvedValue(undefined);
     mocks.engineStop.mockReset();
     mocks.enginePause.mockReset();
+    mocks.pauseBuffer.mockReset();
     mocks.pauseActiveLiveBuffer.mockReset();
     mocks.discussionPause.mockReset();
     mocks.discussionResume.mockReset().mockResolvedValue(true);
@@ -772,6 +774,28 @@ describe('PlaybackChromeRoot element-reference ownership', () => {
     await act(async () => (mocks.roundtableProps?.onDiscussionResume as () => Promise<void>)());
     expect(mocks.engineMode).toBe('live');
   });
+
+  it.each(['playing', 'live', 'paused', 'idle'] as const)(
+    'pauses the retained lecture buffer only during lecture playback (%s)',
+    async (mode) => {
+      const ownerRef = createRef<PlaybackChromeRootHandle>();
+      await renderOwner({ ref: ownerRef });
+      await act(async () => (mocks.roundtableProps?.onPlayPause as () => Promise<void>)());
+      expect(mocks.startLecture).toHaveBeenCalledOnce();
+      mocks.engineMode = mode;
+      mocks.pauseActiveLiveBuffer.mockReturnValue(mode === 'live');
+      act(() => ownerRef.current?.pauseForInteractiveMedia());
+      if (mode === 'playing') {
+        expect(mocks.enginePause).toHaveBeenCalledOnce();
+        expect(mocks.pauseBuffer).toHaveBeenCalledExactlyOnceWith('lecture-1');
+      } else {
+        expect(mocks.enginePause).not.toHaveBeenCalled();
+        expect(mocks.pauseBuffer).not.toHaveBeenCalled();
+      }
+      expect(mocks.pauseActiveLiveBuffer).toHaveBeenCalledOnce();
+      if (mode === 'live') expect(mocks.discussionPause).toHaveBeenCalledOnce();
+    },
+  );
 
   it('exposes a failed discussion silence check as a paused live buffer with working retry', async () => {
     mocks.engineMode = 'live';
