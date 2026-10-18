@@ -46,7 +46,12 @@ function bridgeFixture() {
       sets.push(this);
     }
   }
-  class Media extends EventTarget {
+  class FrameNode extends EventTarget {
+    cloneNode() {
+      return new (this.constructor as typeof FrameNode)();
+    }
+  }
+  class Media extends FrameNode {
     paused = true;
     ended = false;
     error: { code: number } | null = null;
@@ -91,7 +96,32 @@ function bridgeFixture() {
     return Object.assign(Reflect.construct(Media, [], new.target || NativeAudio), { src });
   }
   NativeAudio.prototype = Media.prototype;
-  class FrameDocument extends EventTarget {
+  class FrameElement extends FrameNode {
+    elements: Media[] = [];
+    private html = '';
+    get innerHTML() {
+      return this.html;
+    }
+    set innerHTML(html: string) {
+      if (html === 'invalid') throw new TypeError('invalid HTML');
+      this.html = html;
+      this.elements = [new Media()];
+    }
+    querySelectorAll() {
+      return this.elements;
+    }
+  }
+  class Parser {
+    parseFromString() {
+      const root = new FrameElement();
+      root.elements = [new Media()];
+      return root;
+    }
+  }
+  class FrameDocument extends FrameNode {
+    importNode(node: FrameNode) {
+      return node.cloneNode();
+    }
     frames: Array<{
       contentWindow: object;
       getAttribute: (name: string) => string | null;
@@ -102,7 +132,7 @@ function bridgeFixture() {
       return this.frames;
     }
     createElement(name: string, _options?: unknown): EventTarget {
-      return ['audio', 'video'].includes(name.toLowerCase()) ? new Media() : new EventTarget();
+      return ['audio', 'video'].includes(name.toLowerCase()) ? new Media() : new FrameElement();
     }
     createElementNS(namespace: string, name: string, _options?: unknown): EventTarget {
       return namespace === 'http://www.w3.org/1999/xhtml'
@@ -124,6 +154,9 @@ function bridgeFixture() {
     document: frameDocument,
     HTMLMediaElement: Media,
     Document: FrameDocument,
+    Node: FrameNode,
+    Element: FrameElement,
+    DOMParser: Parser,
     Set: TrackedSet,
     setTimeout,
     clearTimeout,
@@ -138,6 +171,9 @@ function bridgeFixture() {
   control({ action: 'sync', enabled: true });
   return {
     Media,
+    FrameNode,
+    FrameElement,
+    Parser,
     frameDocument,
     Audio: (frameWindow as unknown as { Audio: AudioFactory }).Audio,
     Context: (frameWindow as unknown as { AudioContext: typeof Context }).AudioContext,
@@ -247,6 +283,80 @@ describe('injected media lifetime', () => {
     expect(mediaDocumentId(grandchild)).toBeTruthy();
     expect(grandchild).toContain(leaf);
   });
+  it.each(['DOMParser', 'innerHTML'])(
+    'observes detached parser media from %s without explicit play',
+    (factory) => {
+      const { FrameElement, Parser, media, frameWindow, control } = bridgeFixture();
+      const root = factory === 'DOMParser' ? new Parser().parseFromString() : new FrameElement();
+      if (factory === 'innerHTML') {
+        root.innerHTML = '<audio></audio>';
+        expect(root.innerHTML).toBe('<audio></audio>');
+        expect(() => {
+          root.innerHTML = 'invalid';
+        }).toThrow('invalid HTML');
+      }
+      expect(media.size).toBe(0);
+      const element = root.elements[0];
+      element.paused = false;
+      element.dispatchEvent(new Event('play'));
+      expect(media.size).toBe(1);
+      expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ playing: true }),
+        '*',
+      );
+      control({ action: 'pause', requestId: 1 });
+      expect(element.paused).toBe(true);
+      expect(media.size).toBe(0);
+    },
+  );
+
+  it('observes media in a cloned template content tree without retaining idle originals', () => {
+    const { FrameNode, Media, media, frameWindow } = bridgeFixture();
+    class Template extends FrameNode {
+      tagName = 'TEMPLATE';
+      element = new Media();
+      content = { querySelectorAll: () => [this.element] };
+    }
+    const source = new Template();
+    expect(media.size).toBe(0);
+    const clone = source.cloneNode() as Template;
+    expect(media.size).toBe(0);
+    clone.element.paused = false;
+    clone.element.dispatchEvent(new Event('play'));
+    expect(media.size).toBe(1);
+    expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ playing: true }),
+      '*',
+    );
+    clone.element.pause();
+    expect(media.size).toBe(0);
+  });
+
+  it.each(['cloneNode', 'importNode'] as const)(
+    'observes detached native autoplay via %s',
+    async (factory) => {
+      const { frameDocument, control, media, frameWindow } = bridgeFixture();
+      const original = frameDocument.createElement('audio') as unknown as {
+        cloneNode(): EventTarget;
+      };
+      const element = (
+        factory === 'cloneNode' ? original.cloneNode() : frameDocument.importNode(original as never)
+      ) as EventTarget & { paused: boolean };
+      expect(media.size).toBe(0);
+      element.paused = false;
+      element.dispatchEvent(new Event('play'));
+      expect(media.size).toBe(1);
+      expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ playing: true }),
+        '*',
+      );
+      control({ action: 'pause', requestId: 1 });
+      await Promise.resolve();
+      expect(element.paused).toBe(true);
+      expect(media.size).toBe(0);
+    },
+  );
+
   it.each(
     ['audio', 'video'].flatMap((tag) =>
       ['createElement', 'createElementNS'].map((method) => [tag, method]),

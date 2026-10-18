@@ -244,6 +244,27 @@ function PooledIframe({
 }: PooledIframeProps) {
   const { t } = useI18n();
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [urlEnabled, setUrlEnabled] = useState(false);
+  const urlPause = useRef<{ promise: Promise<boolean>; finish: () => void } | null>(null);
+  useLayoutEffect(() => {
+    if (!urlEnabled) {
+      urlPause.current?.finish();
+      urlPause.current = null;
+    }
+  }, [urlEnabled]);
+  useLayoutEffect(() => {
+    setUrlEnabled(false);
+  }, [entry.src]);
+  useLayoutEffect(() => {
+    if (!visible) setUrlEnabled(false);
+  }, [visible]);
+  useEffect(
+    () => () => {
+      urlPause.current?.finish();
+    },
+    [],
+  );
+
   const mediaSession = useRef<ReturnType<typeof createInteractiveMediaSession> | null>(null);
   const mediaId = mediaDocumentId(entry.srcDoc);
   useLayoutEffect(() => {
@@ -337,11 +358,22 @@ function PooledIframe({
   // the callback reads contentWindow lazily at send time.
   useLayoutEffect(() => {
     const send = (type: string, payload: Record<string, unknown>) => {
-      if (type === MEDIA_CONTROL) return mediaSession.current?.pause();
-      else iframeRef.current?.contentWindow?.postMessage({ type, ...payload }, '*');
+      if (type === MEDIA_CONTROL) {
+        if (mediaSession.current) return mediaSession.current.pause();
+        if (!entry.src || !iframeRef.current) return Promise.resolve(true);
+        if (urlPause.current) return urlPause.current.promise;
+        // shortcut: external pages reload; preserve state when a trusted bridge is available.
+        let finish!: () => void;
+        const promise = new Promise<boolean>((resolve) => {
+          finish = () => resolve(true);
+        });
+        urlPause.current = { promise, finish };
+        setUrlEnabled(false);
+        return promise;
+      } else iframeRef.current?.contentWindow?.postMessage({ type, ...payload }, '*');
     };
     return registerIframe(sceneId, send, documentToken);
-  }, [documentToken, sceneId, registerIframe]);
+  }, [documentToken, entry.src, sceneId, registerIframe]);
 
   useEffect(() => {
     const send = getSendMessage(sceneId);
@@ -459,23 +491,39 @@ function PooledIframe({
 
   return (
     <div style={wrapStyle}>
-      <iframe
-        ref={iframeRef}
-        srcDoc={observation.html}
-        onLoad={() => {
-          observationSession.current?.dispose();
-          observationSession.current =
-            iframeRef.current && observation.identity
-              ? createObservationSession(iframeRef.current, observation.identity)
-              : null;
-          mediaSession.current?.loaded(visible);
-          markIframeReady(sceneId);
-        }}
-        src={entry.srcDoc ? undefined : entry.src}
-        style={iframeStyle}
-        title={`Interactive Scene ${sceneId}`}
-        sandbox="allow-scripts allow-forms allow-popups"
-      />
+      {!entry.srcDoc && entry.src && !urlEnabled ? (
+        <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
+          <p>{t('chat.externalInteractive.reloadHint')}</p>
+          <button
+            type="button"
+            className="rounded-md border px-4 py-2"
+            onClick={() => {
+              onMediaPlay?.();
+              setUrlEnabled(true);
+            }}
+          >
+            {t('chat.externalInteractive.open')}
+          </button>
+        </div>
+      ) : (
+        <iframe
+          ref={iframeRef}
+          srcDoc={observation.html}
+          onLoad={() => {
+            observationSession.current?.dispose();
+            observationSession.current =
+              iframeRef.current && observation.identity
+                ? createObservationSession(iframeRef.current, observation.identity)
+                : null;
+            mediaSession.current?.loaded(visible);
+            markIframeReady(sceneId);
+          }}
+          src={entry.srcDoc ? undefined : entry.src}
+          style={iframeStyle}
+          title={`Interactive Scene ${sceneId}`}
+          sandbox="allow-scripts allow-forms allow-popups"
+        />
+      )}
       {showRuntimeError && latestRuntimeError ? (
         <InteractiveRuntimeErrorBanner
           message={latestRuntimeError}

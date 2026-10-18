@@ -248,6 +248,10 @@
         "audioMetadata": "音訊（僅引用中繼資料）"
       }
     },
+    "externalInteractive": {
+      "open": "開啟互動頁面（暫停旁白）",
+      "reloadHint": "恢復旁白或離開本場景會關閉外部頁面，再次開啟時將重新載入。"
+    },
     "interactiveRuntimeError": {
       "title": "這個互動未能執行",
       "dismiss": "關閉"

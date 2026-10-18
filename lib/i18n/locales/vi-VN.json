@@ -248,6 +248,10 @@
         "audioMetadata": "Âm thanh (chỉ siêu dữ liệu)"
       }
     },
+    "externalInteractive": {
+      "open": "Mở trang tương tác (tạm dừng lời thuyết minh)",
+      "reloadHint": "Tiếp tục lời thuyết minh hoặc rời cảnh này sẽ đóng trang bên ngoài. Mở lại trang sẽ tải lại nội dung."
+    },
     "interactiveRuntimeError": {
       "title": "Tương tác này không chạy được",
       "dismiss": "Đóng"

@@ -141,6 +141,8 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
   function observe(element) {
     // Element-owned listeners survive reuse without retaining idle media globally.
     if (element instanceof HTMLMediaElement) element.addEventListener('play', untrackedPlay);
+    if (element.querySelectorAll) element.querySelectorAll('audio,video,template').forEach(observe);
+    if (element.tagName === 'TEMPLATE') observe(element.content);
     return element;
   }
   ['createElement', 'createElementNS'].forEach(function (name) {
@@ -150,6 +152,23 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
         return observe(Reflect.apply(target, receiver, args));
       }
     });
+  });
+  [[Node.prototype, 'cloneNode'], [Document.prototype, 'importNode'],
+    [typeof DOMParser === 'undefined' ? {} : DOMParser.prototype, 'parseFromString'],
+    [typeof Range === 'undefined' ? {} : Range.prototype, 'createContextualFragment']
+  ].forEach(function (entry) {
+    var native = entry[0][entry[1]];
+    if (native) entry[0][entry[1]] = new Proxy(native, {
+      apply: function (target, receiver, args) { return observe(Reflect.apply(target, receiver, args)); }
+    });
+  });
+  [typeof Element === 'undefined' ? {} : Element.prototype,
+    typeof ShadowRoot === 'undefined' ? {} : ShadowRoot.prototype
+  ].forEach(function (prototype) {
+    var descriptor = Object.getOwnPropertyDescriptor(prototype, 'innerHTML');
+    if (descriptor && descriptor.set) Object.defineProperty(prototype, 'innerHTML', Object.assign({}, descriptor, {
+      set: function (html) { Reflect.apply(descriptor.set, this, [html]); observe(this); }
+    }));
   });
   var Audio = window.Audio;
   if (Audio) window.Audio = new Proxy(Audio, {

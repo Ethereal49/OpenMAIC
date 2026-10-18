@@ -248,6 +248,10 @@
         "audioMetadata": "오디오 (메타데이터만)"
       }
     },
+    "externalInteractive": {
+      "open": "인터랙티브 페이지 열기 (내레이션 일시 정지)",
+      "reloadHint": "내레이션을 재개하거나 이 장면을 떠나면 외부 페이지가 닫힙니다. 다시 열면 페이지를 새로 불러옵니다."
+    },
     "interactiveRuntimeError": {
       "title": "이 인터랙티브를 실행하지 못했습니다",
       "dismiss": "닫기"

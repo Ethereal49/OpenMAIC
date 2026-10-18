@@ -46,12 +46,25 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-it('resumes the retained lecture buffer after a prepaused lecture returns from Q&A', async () => {
+it.each([true, false])('gates retained lecture text after Q&A on silence=%s', async (silent) => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.useFakeTimers();
   fixture.state.chats = [];
   const root = createRoot(document.createElement('div'));
   const ref = createRef<ChatAreaRef>();
+  let blocked = false;
+  let holdRetry = false;
+  let retryCalls = 0;
+  let releaseRetry!: (silent: boolean) => void;
+  const pendingRetry = new Promise<boolean>((resolve) => {
+    releaseRetry = resolve;
+  });
+  const pendingLectureResumeRef = { current: null as string | null };
+  let releaseGuard!: (silent: boolean) => void;
+  const pendingGuard = new Promise<boolean>((resolve) => {
+    releaseGuard = resolve;
+  });
+  let onSpeechStart = (_text: string, _index: number) => {};
   const engine = new PlaybackEngine(
     [{ id: 'scene', actions: [{ id: 'line', type: 'speech', text: 'First line' }] }] as Scene[],
     { clearEffects() {} } as unknown as ActionEngine,
@@ -63,6 +76,15 @@ it('resumes the retained lecture buffer after a prepaused lecture returns from Q
       isPlaying: () => false,
       hasActiveAudio: () => false,
     } as unknown as AudioPlayer,
+    {
+      beforeSpeech: () =>
+        blocked
+          ? pendingGuard
+          : holdRetry && ++retryCalls === 2
+            ? pendingRetry
+            : Promise.resolve(true),
+      onSpeechStart: (text, index) => onSpeechStart(text, index),
+    },
   );
   try {
     await act(async () => root.render(createElement(ChatArea, { ref })));
@@ -71,6 +93,7 @@ it('resumes the retained lecture buffer after a prepaused lecture returns from Q
       sessionId = await ref.current!.startLecture('scene');
     });
     engine.start();
+    await Promise.resolve();
     engine.pause();
     await act(async () => {
       ref.current!.addLectureMessage(
@@ -89,6 +112,8 @@ it('resumes the retained lecture buffer after a prepaused lecture returns from Q
       ts.ScriptKind.TSX,
     );
     let callback = '';
+    let speechCallback = '';
+    let manualCallback = '';
     const visit = (node: ts.Node) => {
       if (
         ts.isVariableDeclaration(node) &&
@@ -97,6 +122,15 @@ it('resumes the retained lecture buffer after a prepaused lecture returns from Q
         ts.isCallExpression(node.initializer)
       )
         callback = node.initializer.arguments[0].getText(file);
+      if (ts.isPropertyAssignment(node) && node.name.getText(file) === 'onSpeechStart')
+        speechCallback = node.initializer.getText(file);
+      if (
+        ts.isVariableDeclaration(node) &&
+        node.name.getText(file) === 'handlePlayPause' &&
+        node.initializer &&
+        ts.isCallExpression(node.initializer)
+      )
+        manualCallback = node.initializer.arguments[0].getText(file);
       ts.forEachChild(node, visit);
     };
     visit(file);
@@ -106,6 +140,7 @@ it('resumes the retained lecture buffer after a prepaused lecture returns from Q
         compilerOptions: { target: ts.ScriptTarget.ES2022 },
       }).outputText,
       {
+        pendingLectureResumeRef,
         engineRef: { current: engine },
         doSessionCleanup: () => engine.handleEndDiscussion(),
         shouldAutoResumeLecture,
@@ -114,10 +149,60 @@ it('resumes the retained lecture buffer after a prepaused lecture returns from Q
         lectureSessionIdRef: { current: sessionId },
       },
     ) as (payload: { source: string; endReason: string }) => Promise<void>;
+    onSpeechStart = runInNewContext(
+      ts.transpileModule('(' + speechCallback + ')', {
+        compilerOptions: { target: ts.ScriptTarget.ES2022 },
+      }).outputText,
+      {
+        pendingLectureResumeRef,
+        lectureSessionIdRef: { current: sessionId },
+        chatAreaRef: ref,
+        setLectureSpeech() {},
+        setActiveBubbleId() {},
+      },
+    );
+    blocked = true;
     await act(async () => {
       await handleStop({ source: 'soft_close_timeout', endReason: 'user_done' });
       await vi.advanceTimersByTimeAsync(6000);
     });
+    const texts = () =>
+      fixture.state.chats
+        .find((s) => s.id === sessionId)
+        ?.messages[0].parts.filter((part) => part.type === 'text')
+        .map((part) => part.text);
+    expect(texts()).toEqual([]);
+    await act(async () => {
+      releaseGuard(silent);
+      await vi.advanceTimersByTimeAsync(6000);
+    });
+    expect(texts()).toEqual(silent ? ['First line'] : []);
+    if (!silent) {
+      expect(engine.getMode()).toBe('paused');
+      blocked = false;
+      holdRetry = true;
+      const manualResume = runInNewContext(
+        ts.transpileModule('(' + manualCallback + ')', {
+          compilerOptions: { target: ts.ScriptTarget.ES2022 },
+        }).outputText,
+        {
+          engineRef: { current: engine },
+          chatAreaRef: ref,
+          lectureSessionIdRef: { current: sessionId },
+          pendingLectureResumeRef,
+        },
+      ) as () => Promise<void>;
+      await act(async () => {
+        await manualResume();
+        await vi.advanceTimersByTimeAsync(6000);
+      });
+      expect(texts()).toEqual([]);
+      await act(async () => {
+        releaseRetry(true);
+        await vi.advanceTimersByTimeAsync(6000);
+      });
+    }
+
     expect(
       fixture.state.chats
         .find((s) => s.id === sessionId)
@@ -125,6 +210,8 @@ it('resumes the retained lecture buffer after a prepaused lecture returns from Q
         .map((part) => part.text),
     ).toEqual(['First line']);
   } finally {
+    releaseRetry(false);
+    releaseGuard(false);
     engine.stop();
     act(() => root.unmount());
   }
@@ -192,6 +279,7 @@ it('persists a pending lecture sentence once when the real player retries it', a
           compilerOptions: { target: ts.ScriptTarget.ES2022 },
         }).outputText,
         {
+          pendingLectureResumeRef: { current: null },
           lectureSessionIdRef: { current: sessionId },
           chatAreaRef: ref,
           lectureActionCounterRef: { current: 0 },

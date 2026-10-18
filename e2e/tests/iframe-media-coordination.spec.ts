@@ -55,7 +55,8 @@ const audio = wav();
 // Model a temporarily unresponsive frame before its bridge receives commands.
 const dropControls = `<script>const add=window.addEventListener;window.addEventListener=function(type,listener,options){if(type==='message'){add.call(this,type,function(event){if(window.blockMediaControls&&event.data?.type==='maic:media:control:v1'){if(event.data.action==='pause')window.blockedPauses=(window.blockedPauses||0)+1;if(window.playOnBlockedPause&&event.data.action==='pause')document.querySelector('audio').play();return}listener.call(this,event)},options);window.addEventListener=add}else add.call(this,type,listener,options)};</script>`;
 const escapeAttribute = (html: string) => html.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
-const nestedMedia = `<button id="audio" onclick="document.querySelector('audio').play()">Nested audio</button><audio preload="none" src="${audio}" loop></audio><button id="video" onclick="document.querySelector('video').play()">Nested video</button><video preload="none" src="${audio}" loop></video><button id="context" onclick="if(!window.ctx){ctx=new AudioContext();const o=ctx.createOscillator();o.connect(ctx.destination);o.start()}ctx.resume()">Nested context</button>`;
+const nestedMedia = `<button id="audio" onclick="document.querySelector('audio').play()">Nested audio</button><audio preload="none" src="${audio}" loop></audio><button id="video" onclick="document.querySelector('video').play()">Nested video</button><video preload="none" src="${audio}" loop></video>
+<button id="context" onclick="if(!window.ctx){ctx=new AudioContext();const o=ctx.createOscillator();o.connect(ctx.destination);o.start()}ctx.resume()">Nested context</button>`;
 const activity = `<button id="audio" onclick="document.querySelector('audio').play()">Frame audio</button><audio id="a" src="${audio}" loop></audio>
 <button id="video" onclick="document.querySelector('video').play()">Frame video</button><video id="v" src="${audio}" loop></video>
 <button id="detached" onclick="detached.play()">Detached audio</button>
@@ -64,17 +65,18 @@ const activity = `<button id="audio" onclick="document.querySelector('audio').pl
 <button id="autoplay-createElement-video" onclick="startAutoplay('video','createElement')">DOM video</button>
 <button id="autoplay-createElementNS-audio" onclick="startAutoplay('audio','createElementNS')">DOM NS audio</button>
 <button id="autoplay-createElementNS-video" onclick="startAutoplay('video','createElementNS')">DOM NS video</button>
+${['cloneNode', 'importNode', 'createContextualFragment', 'innerHTML'].flatMap((method) => ['audio', 'video'].map((tag) => `<button id="autoplay-${method}-${tag}" onclick="startAutoplay('${tag}','${method}')">${method} ${tag}</button>`)).join('')}
 <button id="context" onclick="if(!window.ctx){ctx=new AudioContext();let o=ctx.createOscillator();o.connect(ctx.destination);o.start()}ctx.resume()">WebAudio</button>
 <button id="reuse-context" onclick="if(!window.ctx){ctx=new AudioContext();let o=ctx.createOscillator();o.connect(ctx.destination);o.start();ctx.resume()}">Reuse WebAudio</button>
 <iframe id="nested" style="display:none" srcdoc="${escapeAttribute(`<iframe id="inner" srcdoc="${escapeAttribute(nestedMedia)}"></iframe>`)}"></iframe>
 <form action="http://localhost/without-media-bridge"><button id="self-navigate">Navigate frame</button></form>
 <script>window.detached=new Audio(${JSON.stringify(audio)});detached.loop=true;
 window.autoplayEvents=0;window.explicitPlayCalls=0;
-window.startAutoplay=(tag,method)=>{if(!window.autoplayAudio){const play=HTMLMediaElement.prototype.play;HTMLMediaElement.prototype.play=function(){window.explicitPlayCalls++;return play.apply(this,arguments)};window.autoplayAudio=!tag?new Audio():method==='createElementNS'?document.createElementNS('http://www.w3.org/1999/xhtml',tag):document.createElement(tag);if(tag==='video')autoplayAudio.playsInline=true;autoplayAudio.addEventListener('playing',()=>{window.autoplayEvents++;document.body.dataset.autoplayPlaying='true'});['pause','ended','emptied'].forEach(type=>autoplayAudio.addEventListener(type,()=>document.body.dataset.autoplayPlaying='false'));autoplayAudio.autoplay=true;}autoplayAudio.src=${JSON.stringify(audio)};};</script>`;
+window.startAutoplay=(tag,method)=>{if(!window.autoplayAudio){const play=HTMLMediaElement.prototype.play;HTMLMediaElement.prototype.play=function(){window.explicitPlayCalls++;return play.apply(this,arguments)};const original=tag?document.createElement(tag):null;let parsed;if(method==='innerHTML'){const container=document.createElement('div');container.innerHTML='<'+tag+'></'+tag+'>';parsed=container.firstChild;}window.autoplayAudio=!tag?new Audio():method==='innerHTML'?parsed:method==='cloneNode'?original.cloneNode(true):method==='importNode'?document.importNode(original,true):method==='createContextualFragment'?document.createRange().createContextualFragment('<'+tag+'></'+tag+'>').firstChild:method==='createElementNS'?document.createElementNS('http://www.w3.org/1999/xhtml',tag):original;if(tag==='video')autoplayAudio.playsInline=true;autoplayAudio.addEventListener('playing',()=>{window.autoplayEvents++;document.body.dataset.autoplayPlaying='true'});['pause','ended','emptied'].forEach(type=>autoplayAudio.addEventListener(type,()=>document.body.dataset.autoplayPlaying='false'));autoplayAudio.autoplay=true;}autoplayAudio.src=${JSON.stringify(audio)};};</script>`;
 const hostPath = 'components/scene-renderers/InteractiveIframeHost.tsx';
 const playbackPath = 'components/edit/PlaybackChromeRoot.tsx';
 
-function bundle(surface: 'app' | 'standalone', restart = false): string {
+function bundle(surface: 'app' | 'standalone', restart = false, url = false): string {
   return buildSync({
     absWorkingDir: process.cwd(),
     stdin: {
@@ -110,10 +112,10 @@ const runtime={errors:{},clearScene(){}};const useSceneRuntimeErrors=Object.assi
 const InteractiveRuntimeErrorBanner=()=>null;const resolveInteractivePickerMode=()=>null;const createObservationSession=()=>null;
 ${sourceFunction(hostPath, 'PooledIframe')}
 const currentScene={id:'s',type:'interactive',actions:[{id:'speech',type:'speech',text:'Narration',audioId:'narration'},{id:'second',type:'speech',text:'Second narration',audioId:'narration'}],content:{type:'interactive'}};
-const setEngineMode=()=>{};const lectureSessionIdRef={current:null};const chatAreaRef={current:null};const discussionTTS={pause(){}};const setIsDiscussionPaused=()=>{};
+const setLectureSpeech=()=>{};const setActiveBubbleId=()=>{};const setEngineMode=()=>{};const lectureSessionIdRef={current:null};const pendingLectureResumeRef={current:null};const chatAreaRef={current:null};const discussionTTS={pause(){}};const setIsDiscussionPaused=()=>{};
 window.proactive=null;
 let currentSceneId='s';const pauseInteractiveMedia=${sourceFunction(playbackPath, 'pauseInteractiveMedia')};
-const engineRef={current:new PlaybackEngine([currentScene],{clearEffects(){},execute(){}},new AudioPlayer(),{beforeSpeech:pauseInteractiveMedia,onModeChange:${sourceFunction(playbackPath, 'onModeChange')},onProactiveShow:trigger=>{window.proactive=trigger.id}})};
+const engineRef={current:new PlaybackEngine([currentScene],{clearEffects(){},execute(){}},new AudioPlayer(),{beforeSpeech:pauseInteractiveMedia,onModeChange:${sourceFunction(playbackPath, 'onModeChange')},onSpeechStart:${sourceFunction(playbackPath, 'onSpeechStart')},onProactiveShow:trigger=>{window.proactive=trigger.id}})};
 const onMediaPlay=${sourceFunction(playbackPath, 'pauseForInteractiveMedia')};window.mode=()=>engineRef.current.getMode();
 window.cursor=()=>engineRef.current.getSnapshot().actionIndex;
 window.prepareDiscussion=()=>currentScene.actions.unshift({id:'delayed',type:'discussion',topic:'Question',prompt:'Discuss'});
@@ -126,13 +128,13 @@ window.prepareLiveLecture=(prepaused=false)=>{
   const callbacks={onAgentStart(){},onAgentEnd(){},onTextReveal(_id,_part,text){window.lectureText=text},onActionReady(){window.lectureActions++},onLiveSpeech(){},onSpeechProgress(){},onThinking(){},onCueUser(){},onDone(){},onError(message){throw new Error(message)}};
   const lecture=new StreamBuffer(callbacks,{charsPerTick:100});lecture.start();
   const live=new StreamBuffer(callbacks);lectureSessionIdRef.current='lecture';
-  chatAreaRef.current={startLecture:async()=> 'lecture',resumeBuffer(){lecture.resume()},pauseBuffer(){lecture.pause()},pauseActiveLiveBuffer(){live.pause();return true}};
-  if(prepaused){lecture.pause();engineRef.current.pause();}
+  chatAreaRef.current={startLecture:async()=> 'lecture',addLectureMessage(){},getLectureMessageId(){},resumeBuffer(){lecture.resume()},pauseBuffer(){lecture.pause()},pauseActiveLiveBuffer(){live.pause();return true}};
+  if(prepaused){lecture.pause();if(engineRef.current.getMode()==='playing')engineRef.current.pause();}
   window.liveBufferPaused=()=>live.paused;
   engineRef.current.handleUserInterrupt('A question');
   window.returnFromLive=async()=>{live.resume();await autoResumeLecture({source:'soft_close_timeout',endReason:'user_done'});lecture.pushText('lecture','Continued lecture text');lecture.pushAction({messageId:'lecture',actionId:'continued',actionName:'spotlight',params:{},agentId:'teacher'});};
 };
-function App(){const [visible,setVisible]=useState(true);window.departForNarration=()=>{engineRef.current.stop();currentSceneId='destination';engineRef.current=new PlaybackEngine([{...currentScene,id:currentSceneId}],{clearEffects(){}},new AudioPlayer(),{beforeSpeech:pauseInteractiveMedia,onSpeechStart:()=>{window.destinationSpeechStarted=true}});setVisible(false);};useLayoutEffect(()=>{if(!visible&&currentSceneId==='destination')engineRef.current.start();},[visible]);return <><button onClick={()=>window.departForNarration()}>Next scene</button><button onClick={()=>engineRef.current.getMode()==='idle'?engineRef.current.start():engineRef.current.resume()}>Narrate</button><button onClick={()=>engineRef.current.continuePlayback()}>Continue lecture</button><button onClick={()=>window.returnFromLive()}>Return from Q&A</button><button onClick={()=>engineRef.current.pause()}>Pause</button><button onClick={()=>{engineRef.current.stop();setVisible(!visible)}}>Navigate</button><PooledIframe onMediaPlay={onMediaPlay} sceneId="s" entry={{srcDoc:html,rect:{left:0,top:100,width:1280,height:720},clip:{left:0,top:100,width:1280,height:720},owner:'o'}} visible={visible} playbackArmed={false}/></>}
+function App(){const [visible,setVisible]=useState(true);window.departForNarration=()=>{engineRef.current.stop();currentSceneId='destination';engineRef.current=new PlaybackEngine([{...currentScene,id:currentSceneId}],{clearEffects(){}},new AudioPlayer(),{beforeSpeech:pauseInteractiveMedia,onSpeechStart:()=>{window.destinationSpeechStarted=true}});setVisible(false);};useLayoutEffect(()=>{if(!visible&&currentSceneId==='destination')engineRef.current.start();},[visible]);return <><button onClick={()=>window.departForNarration()}>Next scene</button><button onClick={()=>engineRef.current.getMode()==='idle'?engineRef.current.start():engineRef.current.resume()}>Narrate</button><button onClick={()=>engineRef.current.continuePlayback()}>Continue lecture</button><button onClick={()=>window.returnFromLive()}>Return from Q&A</button><button onClick={()=>engineRef.current.pause()}>Pause</button><button onClick={()=>{engineRef.current.stop();setVisible(!visible)}}>Navigate</button><PooledIframe onMediaPlay={onMediaPlay} sceneId="s" entry={{${url ? 'src:"http://external.test/activity"' : 'srcDoc:html'},rect:{left:0,top:100,width:1280,height:720},clip:{left:0,top:100,width:1280,height:720},owner:'o'}} visible={visible} playbackArmed={false}/></>}
 `
 }
 window.narrationPaused=()=>window.audios[0]?.paused??true;
@@ -332,6 +334,91 @@ for (const surface of ['app', 'standalone'] as const) {
     }
 
     if (surface === 'app') {
+      for (const media of ['audio', 'context']) {
+        test(`coordinates uninstrumented URL ${media} by unloading before narration and reopening explicitly`, async ({
+          page,
+        }) => {
+          await page.route('http://external.test/activity', (route) =>
+            route.fulfill({ contentType: 'text/html', body: nestedMedia }),
+          );
+          await page.goto('http://localhost/media-test');
+          await page.addScriptTag({ content: bundle('app', false, true) });
+          await expect(page.locator('iframe')).toHaveCount(0);
+          await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+          await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
+          await page
+            .getByRole('button', { name: 'chat.externalInteractive.open', exact: true })
+            .click();
+          await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+          await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'false');
+          const frame = page.frameLocator('iframe');
+          await frame.locator('#' + media).click();
+          const child = page.frames()[1];
+          await expect
+            .poll(() =>
+              child.evaluate(
+                (kind) =>
+                  kind === 'context'
+                    ? (window as unknown as { ctx: AudioContext }).ctx.state
+                    : document.querySelector<HTMLMediaElement>('audio')!.currentTime > 0,
+                media,
+              ),
+            )
+            .toBe(media === 'context' ? 'running' : true);
+          expect(await page.locator('iframe').getAttribute('sandbox')).not.toContain(
+            'allow-same-origin',
+          );
+          await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+          await expect(page.locator('iframe')).toHaveCount(0);
+          expect(child.isDetached()).toBe(true);
+          await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
+          await page
+            .getByRole('button', { name: 'chat.externalInteractive.open', exact: true })
+            .click();
+          await expect(frame.locator('#audio')).toBeVisible();
+          await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+          expect(await page.frames()[1].evaluate('typeof window.ctx')).toBe('undefined');
+          expect(await page.frames()[1].evaluate('document.querySelector("audio").paused')).toBe(
+            true,
+          );
+        });
+      }
+      test('unloads a hidden URL before destination narration starts', async ({ page }) => {
+        await page.route('http://external.test/activity', (route) =>
+          route.fulfill({ contentType: 'text/html', body: nestedMedia }),
+        );
+        await page.goto('http://localhost/media-test');
+        await page.addScriptTag({ content: bundle('app', false, true) });
+        await page
+          .getByRole('button', { name: 'chat.externalInteractive.open', exact: true })
+          .click();
+        await page.frameLocator('iframe').locator('#context').click();
+        const oldFrame = page.frames()[1];
+        await expect.poll(() => oldFrame.evaluate('ctx.state')).toBe('running');
+        await page.getByRole('button', { name: 'Next scene', exact: true }).click();
+        await expect(page.locator('iframe')).toHaveCount(0);
+        expect(oldFrame.isDetached()).toBe(true);
+        await expect.poll(() => page.evaluate('window.destinationSpeechStarted')).toBe(true);
+        await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
+      });
+      test('holds retained lecture text and actions through failed Q&A recovery and resumes on retry', async ({
+        page,
+      }) => {
+        await finishFrameLoad(page);
+        await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+        await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
+        await startUnresponsiveFrame(page);
+        await page.evaluate('prepareLiveLecture(true)');
+        await page.getByRole('button', { name: 'Return from Q&A', exact: true }).click();
+        await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+        expect(await page.evaluate('lectureText')).toBe('');
+        expect(await page.evaluate('lectureActions')).toBe(0);
+        await page.frames()[1].evaluate('window.blockMediaControls=false');
+        await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+        await expect.poll(() => page.evaluate('lectureText')).toBe('Continued lecture text');
+        await expect.poll(() => page.evaluate('lectureActions')).toBe(1);
+        await expect.poll(() => page.evaluate('mode()')).toBe('playing');
+      });
       test('waits for hidden pooled WebAudio while navigation completes', async ({ page }) => {
         const child = page.frames()[1];
         await child.evaluate(() => {
@@ -348,6 +435,7 @@ for (const surface of ['app', 'standalone'] as const) {
         await expect.poll(() => child.evaluate('ctx.state')).toBe('running');
         await page.getByRole('button', { name: 'Next scene', exact: true }).click();
         await expect(page.locator('iframe')).toBeHidden();
+        await expect.poll(() => child.evaluate('typeof window.finishSuspend')).toBe('function');
         expect(await page.evaluate('Boolean(window.destinationSpeechStarted)')).toBe(false);
         expect(await child.evaluate('ctx.state')).toBe('running');
         await child.evaluate('finishSuspend()');
@@ -532,10 +620,15 @@ for (const surface of ['app', 'standalone'] as const) {
       'createElement-video',
       'createElementNS-audio',
       'createElementNS-video',
+      ...['cloneNode', 'importNode', 'createContextualFragment', 'innerHTML'].flatMap((method) =>
+        ['audio', 'video'].map((tag) => `${method}-${tag}`),
+      ),
     ]) {
-      test(`${creation === 'Audio' ? 'tracks native detached autoplay' : 'tracks DOM-created detached autoplay ' + creation} and its reuse without explicit play calls`, async ({
-        page,
-      }) => {
+      test(`coordinates detached ${creation} playback and reuse`, async ({ page, browserName }) => {
+        test.skip(
+          creation.startsWith('innerHTML') && browserName === 'chromium',
+          'Detached parser-created media does not start in the Chromium no-bridge native control.',
+        );
         await finishFrameLoad(page);
         await page.getByRole('button', { name: 'Narrate', exact: true }).click();
         await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
