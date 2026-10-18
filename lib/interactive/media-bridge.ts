@@ -75,7 +75,7 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
       var id = childDocumentId(frame);
       if (!id) { guardUninstrumented(frame); return; }
       var child = { frame: frame, id: id, generation: ++childGeneration, playing: false, pending: null };
-      child.load = function () { child.generation = ++childGeneration; child.playing = false; syncChild(child); };
+      child.load = function () { child.generation = ++childGeneration; child.playing = true; syncChild(child); report(); };
       children.set(frame, child);
       frame.addEventListener('load', child.load);
       syncChild(child);
@@ -86,7 +86,7 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
     var id = ++childRequest;
     var pending = { id: id };
     pending.promise = new Promise(function (resolve) {
-      var timer = setTimeout(function () { pending.finish(!child.playing); }, 1000);
+      var timer = setTimeout(function () { pending.finish(false); }, 1000);
       pending.finish = function (silent) { clearTimeout(timer); child.pending = null; resolve(silent); };
     });
     child.pending = pending;
@@ -147,6 +147,7 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
   }
   document.addEventListener('pointerdown', gesture, true);
   document.addEventListener('keydown', gesture, true);
+  window.addEventListener('pagehide', function () { report(0, true); });
   function changed() {
     if (!enabled) pause();
     report();
@@ -315,7 +316,7 @@ export function createInteractiveMediaSession(
   let enabled = true;
   let disposed = false;
   let generation = ++nextMediaGeneration;
-  let reportedPlaying = false;
+  let hasLoaded = false;
   let pendingPause: {
     id: number;
     promise: Promise<boolean>;
@@ -329,11 +330,15 @@ export function createInteractiveMediaSession(
   };
   const pause = (): Promise<boolean> => {
     if (disposed) return Promise.resolve(false);
-    if (pendingPause) return pendingPause.promise;
+    if (pendingPause) {
+      const promise = pendingPause.promise;
+      sync();
+      return promise;
+    }
     const id = ++nextPauseRequestId;
     let finish!: (silent: boolean) => void;
     const promise = new Promise<boolean>((resolve) => {
-      const timer = setTimeout(() => finish(!reportedPlaying), 1000);
+      const timer = setTimeout(() => finish(false), 1000);
       finish = (silent) => {
         clearTimeout(timer);
         pendingPause = null;
@@ -366,12 +371,10 @@ export function createInteractiveMediaSession(
     // A queued play report must not re-pause narration just resumed by the host.
     if (pendingPause) {
       if (data.requestId !== pendingPause.id) {
-        if (data.requestId === 0 && data.playing) reportedPlaying = true;
         return;
       }
       pendingPause.finish(!data.playing);
     } else if (data.requestId !== 0) return;
-    reportedPlaying = data.playing;
     if (data.playing) {
       if (enabled) onPlay();
       else pause();
@@ -387,9 +390,11 @@ export function createInteractiveMediaSession(
     pause,
     sync,
     loaded(nextEnabled = enabled) {
+      pendingPause?.finish(false);
       generation = ++nextMediaGeneration;
-      reportedPlaying = false;
       sync(nextEnabled);
+      if (hasLoaded && enabled) onPlay();
+      hasLoaded = true;
     },
     dispose() {
       disposed = true;

@@ -196,6 +196,31 @@ function bridgeFixture() {
 }
 
 describe('injected media lifetime', () => {
+  it('holds narration after a nested load that cannot acknowledge the current pause', async () => {
+    vi.useFakeTimers();
+    const { frameDocument, frameWindow, control } = bridgeFixture();
+    const addEventListener = vi.fn();
+    frameDocument.frames.push({
+      contentWindow: { postMessage: vi.fn() },
+      getAttribute: (name) =>
+        name === 'srcdoc' ? '<script data-maic-media-document="child">' : null,
+      addEventListener,
+      removeEventListener: vi.fn(),
+    });
+    control({ action: 'sync', enabled: true });
+    addEventListener.mock.calls.find(([type]) => type === 'load')![1]();
+    expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ playing: true }),
+      '*',
+    );
+    control({ action: 'pause', requestId: 77 });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ requestId: 77, playing: true }),
+      '*',
+    );
+  });
+
   it('keeps parser-discovered media observable after release and detached native reuse', async () => {
     const { Media, media, nativePlay, control, frameWindow } = bridgeFixture();
     const element = new Media();
@@ -683,12 +708,22 @@ describe('bridge-owned AudioContext suspension', () => {
 });
 
 describe('interactive media boundary', () => {
-  it('allows narration after an unknown frame stops answering', async () => {
+  it('rejects a pause when the loaded document never bootstraps its bridge', async () => {
     vi.useFakeTimers();
     const { session } = fixture();
+    session.loaded();
     const silent = session.pause();
     await vi.advanceTimersByTimeAsync(1000);
-    await expect(silent).resolves.toBe(true);
+    await expect(silent).resolves.toBe(false);
+  });
+
+  it('requires a current acknowledgement even from a previously silent frame', async () => {
+    vi.useFakeTimers();
+    const { session, message } = fixture();
+    message({ ...playing, playing: false });
+    const silent = session.pause();
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(silent).resolves.toBe(false);
     vi.useRealTimers();
   });
 
@@ -702,15 +737,29 @@ describe('interactive media boundary', () => {
     const oldId = post.mock.calls.at(-1)![0].requestId;
     session.loaded();
     await vi.advanceTimersByTimeAsync(1000);
-    await expect(old).resolves.toBe(true);
+    await expect(old).resolves.toBe(false);
     played.mockClear();
     message({ ...playing, generation: oldGeneration });
     message({ ...playing, generation: oldGeneration, requestId: oldId });
     expect(played).not.toHaveBeenCalled();
     const next = session.pause();
     await vi.advanceTimersByTimeAsync(1000);
-    await expect(next).resolves.toBe(true);
+    await expect(next).resolves.toBe(false);
+    message({ ...playing, playing: false });
+    const confirmed = session.pause();
+    message({ ...playing, requestId: post.mock.calls.at(-1)![0].requestId, playing: false });
+    await expect(confirmed).resolves.toBe(true);
     vi.useRealTimers();
+  });
+
+  it('pauses narration on a subsequent document load, but not on the first load', () => {
+    const { session, played } = fixture();
+    session.loaded();
+    expect(played).not.toHaveBeenCalled();
+    session.loaded();
+    expect(played).toHaveBeenCalledOnce();
+    session.loaded(false);
+    expect(played).toHaveBeenCalledOnce();
   });
 
   it('resynchronizes a bridge that starts before iframe load without accepting its old state', () => {
@@ -779,6 +828,22 @@ describe('interactive media boundary', () => {
     session.sync(true);
     message(playing);
     expect(played).toHaveBeenCalledOnce();
+  });
+
+  it('reissues a pending pause when a caller retries after the frame becomes responsive', async () => {
+    vi.useFakeTimers();
+    const { session, post, message } = fixture();
+    let responsive = false;
+    post.mockImplementation((data) => {
+      if (responsive && data.action === 'pause')
+        message({ ...playing, requestId: data.requestId, playing: false });
+    });
+    const first = session.pause();
+    responsive = true;
+    const retry = session.pause();
+    expect(retry).toBe(first);
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(retry).resolves.toBe(true);
   });
 
   it('coalesces pauses and ignores old reports until silence is acknowledged', async () => {

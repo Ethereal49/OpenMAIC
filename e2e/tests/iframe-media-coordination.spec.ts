@@ -233,7 +233,7 @@ for (const surface of ['app', 'standalone'] as const) {
       await page.route(/^http:\/\/localhost\/without-media-bridge(?:\?.*)?$/, (route) =>
         route.fulfill({
           contentType: 'text/html',
-          body: '<p id="no-bridge">Navigated document</p>',
+          body: `<p id="no-bridge">Navigated document</p><button id="play" onclick="document.querySelector('audio').play()">Play</button><audio src="${audio}" loop></audio>`,
         }),
       );
       await page.route('http://localhost/media-test', (route) =>
@@ -372,15 +372,47 @@ for (const surface of ['app', 'standalone'] as const) {
       ).toBe(true);
     });
 
-    test('continues both narration lines after a form navigates to an uninstrumented document', async ({
+    test('requires a fresh bridge after a form navigates to an uninstrumented document', async ({
       page,
     }) => {
       await page.getByRole('button', { name: 'Narrate', exact: true }).click();
-      await expect.poll(() => page.evaluate('narrationPaused()')).toBe(false);
-      await page.frameLocator('iframe').locator('#audio').click();
-      await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+      await expect
+        .poll(() =>
+          page.evaluate(
+            'audios[0]?.duration > 1 && !audios[0].paused && audios[0].currentTime > 0',
+          ),
+        )
+        .toBe(true);
       await page.frameLocator('iframe').locator('#self-navigate').click();
       await expect(page.frameLocator('iframe').locator('#no-bridge')).toBeVisible();
+      await page.frameLocator('iframe').locator('#play').click();
+      const child = page.frames()[1];
+      await expect
+        .poll(() =>
+          child.evaluate(
+            '!document.querySelector("audio").paused && document.querySelector("audio").currentTime > 0',
+          ),
+        )
+        .toBe(true);
+      console.log(
+        'same-frame native playback',
+        await child.evaluate('document.querySelector("audio").currentTime'),
+        await page.evaluate('mode()'),
+      );
+      await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+      await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+      await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+      expect(await page.evaluate('narrationPaused()')).toBe(true);
+      const reloaded = page.locator('iframe').evaluate(
+        (frame: HTMLIFrameElement) =>
+          new Promise<void>((resolve) => {
+            frame.addEventListener('load', () => resolve(), { once: true });
+            frame.srcdoc = frame.srcdoc;
+          }),
+      );
+      await expect(page.frameLocator('iframe').locator('#audio')).toBeVisible();
+      await finishFrameLoad(page);
+      await reloaded;
       await page.getByRole('button', { name: 'Narrate', exact: true }).click();
       await expect.poll(() => page.evaluate('narrationPaused()')).toBe(false);
       await finishNarration(page);
