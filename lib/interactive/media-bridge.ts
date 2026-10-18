@@ -65,6 +65,7 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
     children.forEach(function (child, frame) {
       var id = childDocumentId(frame);
       if (!frames.has(frame) || id !== child.id) {
+        clearTimeout(child.recoveryTimer);
         frame.removeEventListener('load', child.load);
         children.delete(frame);
         if (child.pending) child.pending.finish(true);
@@ -75,7 +76,22 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
       var id = childDocumentId(frame);
       if (!id) { guardUninstrumented(frame); return; }
       var child = { frame: frame, id: id, generation: ++childGeneration, playing: false, pending: null };
-      child.load = function () { child.generation = ++childGeneration; child.playing = true; syncChild(child); report(); };
+      child.load = function () {
+        clearTimeout(child.recoveryTimer);
+        var restored = child.restoring;
+        child.restoring = false;
+        child.generation = ++childGeneration;
+        child.playing = true;
+        var source = frame.getAttribute('srcdoc');
+        var loadGeneration = child.generation;
+        if (!restored && source) child.recoveryTimer = setTimeout(function () {
+          if (children.get(frame) !== child || child.generation !== loadGeneration || !frame.isConnected || frame.getAttribute('srcdoc') !== source) return;
+          child.restoring = true;
+          frame.srcdoc = source;
+        }, 1000);
+        syncChild(child);
+        report();
+      };
       children.set(frame, child);
       frame.addEventListener('load', child.load);
       syncChild(child);
@@ -215,6 +231,14 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
       set: function (html) { Reflect.apply(descriptor.set, this, [html]); observe(this); }
     }));
   });
+  var insertAdjacentHTML = typeof Element !== 'undefined' && Element.prototype.insertAdjacentHTML;
+  if (insertAdjacentHTML) Element.prototype.insertAdjacentHTML = new Proxy(insertAdjacentHTML, {
+    apply: function (target, receiver, args) {
+      var result = Reflect.apply(target, receiver, args);
+      observe(receiver.parentNode || receiver);
+      return result;
+    }
+  });
   var Audio = window.Audio;
   if (Audio) window.Audio = new Proxy(Audio, {
     apply: function (target, receiver, args) {
@@ -264,6 +288,7 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
         if (event.source !== child.frame.contentWindow || !data || data.type !== 'maic:media:state:v1' || data.documentId !== child.id || typeof data.playing !== 'boolean' || !Number.isSafeInteger(data.requestId) || data.requestId < 0) return;
         if (data.generation === 0 && data.requestId === 0) { syncChild(child); return; }
         if (data.generation !== child.generation) return;
+        if (data.requestId === 0 || (child.pending && data.requestId === child.pending.id)) clearTimeout(child.recoveryTimer);
         if (child.pending) {
           if (data.requestId !== child.pending.id) {
             if (data.requestId === 0 && data.playing) { child.playing = true; report(); }
@@ -321,6 +346,14 @@ export function createInteractiveMediaSession(
   let disposed = false;
   let generation = ++nextMediaGeneration;
   let hasLoaded = false;
+  let restoring = false;
+  let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
+  let finishLoading: ((ready: boolean) => void) | undefined;
+  const settleLoad = (ready: boolean) => {
+    clearTimeout(recoveryTimer);
+    finishLoading?.(ready);
+    finishLoading = undefined;
+  };
   let pendingPause: {
     id: number;
     promise: Promise<boolean>;
@@ -372,6 +405,7 @@ export function createInteractiveMediaSession(
       return;
     }
     if (data.generation !== generation) return;
+    if (data.requestId === 0 || data.requestId === pendingPause?.id) settleLoad(true);
     // A queued play report must not re-pause narration just resumed by the host.
     if (pendingPause) {
       if (data.requestId !== pendingPause.id) {
@@ -394,14 +428,34 @@ export function createInteractiveMediaSession(
     pause,
     sync,
     loaded(nextEnabled = enabled) {
-      pendingPause?.finish(false);
+      if (disposed) return Promise.resolve(false);
+      settleLoad(false);
       generation = ++nextMediaGeneration;
+      const restored = restoring;
+      restoring = false;
+      const source = frame.getAttribute('srcdoc');
+      const loadGeneration = generation;
+      const promise = new Promise<boolean>((resolve) => {
+        finishLoading = resolve;
+      });
+      recoveryTimer = setTimeout(() => {
+        if (disposed || generation !== loadGeneration) return;
+        settleLoad(false);
+        if (!restored && source && mediaDocumentId(source) === documentId) {
+          if (!frame.isConnected || frame.getAttribute('srcdoc') !== source) return;
+          if (enabled) onPlay();
+          restoring = true;
+          frame.srcdoc = source;
+        }
+      }, 1000);
       sync(nextEnabled);
-      if (hasLoaded && enabled) onPlay();
+      if (hasLoaded && !restored && enabled) onPlay();
       hasLoaded = true;
+      return promise;
     },
     dispose() {
       disposed = true;
+      settleLoad(false);
       pendingPause?.finish(false);
       post({ action: 'sync', enabled: false });
       window.removeEventListener('message', onMessage);

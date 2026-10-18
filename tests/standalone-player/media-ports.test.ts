@@ -8,6 +8,7 @@ import {
 import { PauseGate, type StepControl } from '@/lib/standalone-player/playback/pause-gate';
 import type { MediaLibrary } from '@/lib/standalone-player/playback/media-library';
 import { MAX_VIDEO_WAIT_MS } from '@/lib/choreography/timing';
+import { mediaBridgeScript } from '@/lib/interactive/media-bridge';
 
 /**
  * jsdom implements no media playback: give an element scriptable play/pause
@@ -381,6 +382,51 @@ describe('VideoRegistry', () => {
 });
 
 describe('WidgetChannel', () => {
+  it('waits for the current bridge before flushing widgets across document reloads', async () => {
+    const frame = document.createElement('iframe');
+    frame.srcdoc = mediaBridgeScript('current');
+    document.body.append(frame);
+    const channel = new WidgetChannel();
+    const post = vi.spyOn(frame.contentWindow!, 'postMessage');
+    channel.attach(frame);
+    const message = (generation: number) =>
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          source: frame.contentWindow,
+          data: {
+            type: 'maic:media:state:v1',
+            documentId: 'current',
+            generation,
+            requestId: 0,
+            playing: false,
+          },
+        }),
+      );
+    try {
+      channel.send('FIRST', { order: 1 });
+      const first = channel.markLoaded(frame);
+      const oldGeneration = post.mock.calls.at(-1)![0].generation;
+      message(oldGeneration);
+      const current = channel.markLoaded(frame);
+      const generation = post.mock.calls.at(-1)![0].generation;
+      await first;
+      channel.send('SECOND', { order: 2 });
+      message(oldGeneration);
+      expect(post.mock.calls.filter(([data]) => ['FIRST', 'SECOND'].includes(data.type))).toEqual(
+        [],
+      );
+      message(generation);
+      await current;
+      expect(post.mock.calls.filter(([data]) => ['FIRST', 'SECOND'].includes(data.type))).toEqual([
+        [{ type: 'FIRST', order: 1 }, '*'],
+        [{ type: 'SECOND', order: 2 }, '*'],
+      ]);
+    } finally {
+      channel.attach(null);
+      frame.remove();
+    }
+  });
+
   it('queues messages until the iframe loaded, then posts them in order', () => {
     const channel = new WidgetChannel();
     const frame = document.createElement('iframe');

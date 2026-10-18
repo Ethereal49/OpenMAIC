@@ -56,7 +56,7 @@ const audio = wav();
 const dropControls = `<script>const add=window.addEventListener;window.addEventListener=function(type,listener,options){if(type==='message'){add.call(this,type,function(event){if(window.blockMediaControls&&event.data?.type==='maic:media:control:v1'){if(event.data.action==='pause')window.blockedPauses=(window.blockedPauses||0)+1;if(window.playOnBlockedPause&&event.data.action==='pause')document.querySelector('audio').play();return}listener.call(this,event)},options);window.addEventListener=add}else add.call(this,type,listener,options)};</script>`;
 const escapeAttribute = (html: string) => html.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
 const nestedMedia = `<button id="audio" onclick="document.querySelector('audio').play()">Nested audio</button><audio preload="none" src="${audio}" loop></audio><button id="video" onclick="document.querySelector('video').play()">Nested video</button><video preload="none" src="${audio}" loop></video>
-<button id="context" onclick="if(!window.ctx){ctx=new AudioContext();const o=ctx.createOscillator();o.connect(ctx.destination);o.start()}ctx.resume()">Nested context</button>`;
+<button id="context" onclick="if(!window.ctx){ctx=new AudioContext();const o=ctx.createOscillator();o.connect(ctx.destination);o.start()}ctx.resume()">Nested context</button><form action="http://localhost/without-media-bridge"><button id="navigate-nested">Navigate nested</button></form>`;
 const activity = `<button id="audio" onclick="document.querySelector('audio').play()">Frame audio</button><audio id="a" src="${audio}" loop></audio>
 <button id="video" onclick="document.querySelector('video').play()">Frame video</button><video id="v" src="${audio}" loop></video>
 <button id="detached" onclick="detached.play()">Detached audio</button>
@@ -65,7 +65,7 @@ const activity = `<button id="audio" onclick="document.querySelector('audio').pl
 <button id="autoplay-createElement-video" onclick="startAutoplay('video','createElement')">DOM video</button>
 <button id="autoplay-createElementNS-audio" onclick="startAutoplay('audio','createElementNS')">DOM NS audio</button>
 <button id="autoplay-createElementNS-video" onclick="startAutoplay('video','createElementNS')">DOM NS video</button>
-${['parser-first', 'parser', 'cloneNode', 'importNode', 'createContextualFragment', 'innerHTML'].flatMap((method) => ['audio', 'video'].map((tag) => `<button id="autoplay-${method}-${tag}" onclick="startAutoplay('${tag}','${method}')">${method} ${tag}</button>`)).join('')}
+${['insertAdjacentHTML', 'parser-first', 'parser', 'cloneNode', 'importNode', 'createContextualFragment', 'innerHTML'].flatMap((method) => ['audio', 'video'].map((tag) => `<button id="autoplay-${method}-${tag}" onclick="startAutoplay('${tag}','${method}')">${method} ${tag}</button>`)).join('')}
 <button id="context" onclick="if(!window.ctx){ctx=new AudioContext();let o=ctx.createOscillator();o.connect(ctx.destination);o.start()}ctx.resume()">WebAudio</button>
 ${['audio', 'video'].map((tag) => `<button id="prime-parser-${tag}" onclick="primeParserMedia('${tag}')">Prime parser ${tag}</button><${tag} id="parser-${tag}" src="${audio}" loop></${tag}>`).join('')}
 <audio id="unplayed-audio" loop></audio><video id="unplayed-video" loop></video><script>window.unplayed={audio:document.getElementById('unplayed-audio'),video:document.getElementById('unplayed-video')};unplayed.audio.remove();unplayed.video.remove();</script>
@@ -73,8 +73,8 @@ ${['audio', 'video'].map((tag) => `<button id="prime-parser-${tag}" onclick="pri
 <iframe id="nested" style="display:none" srcdoc="${escapeAttribute(`<iframe id="inner" srcdoc="${escapeAttribute(nestedMedia)}"></iframe>`)}"></iframe>
 <form action="http://localhost/without-media-bridge"><button id="self-navigate">Navigate frame</button></form>
 <script>window.detached=new Audio(${JSON.stringify(audio)});detached.loop=true;
-window.autoplayEvents=0;window.explicitPlayCalls=0;window.primeParserMedia=async(tag)=>{window.parserMedia=document.getElementById('parser-'+tag);parserMedia.src=${JSON.stringify(audio)};await parserMedia.play();parserMedia.pause();parserMedia.remove();window.parserPrimed=true};
-window.startAutoplay=(tag,method)=>{if(!window.autoplayAudio){const play=HTMLMediaElement.prototype.play;HTMLMediaElement.prototype.play=function(){window.explicitPlayCalls++;return play.apply(this,arguments)};const original=tag?document.createElement(tag):null;let parsed;if(method==='innerHTML'){const container=document.createElement('div');container.innerHTML='<'+tag+'></'+tag+'>';parsed=container.firstChild;}window.autoplayAudio=method==='parser-first'?window.unplayed[tag]:method==='parser'?window.parserMedia:!tag?new Audio():method==='innerHTML'?parsed:method==='cloneNode'?original.cloneNode(true):method==='importNode'?document.importNode(original,true):method==='createContextualFragment'?document.createRange().createContextualFragment('<'+tag+'></'+tag+'>').firstChild:method==='createElementNS'?document.createElementNS('http://www.w3.org/1999/xhtml',tag):original;if(tag==='video')autoplayAudio.playsInline=true;autoplayAudio.addEventListener('playing',()=>{window.autoplayEvents++;document.body.dataset.autoplayPlaying='true'});['pause','ended','emptied'].forEach(type=>autoplayAudio.addEventListener(type,()=>document.body.dataset.autoplayPlaying='false'));autoplayAudio.autoplay=true;}autoplayAudio.src=${JSON.stringify(audio)};};</script>`;
+window.widgetValues=[];window.addEventListener('message',event=>{if(event.data?.type==='SET_WIDGET_STATE')widgetValues.push(event.data.value)});window.autoplayEvents=0;window.explicitPlayCalls=0;window.primeParserMedia=async(tag)=>{window.parserMedia=document.getElementById('parser-'+tag);parserMedia.src=${JSON.stringify(audio)};await parserMedia.play();parserMedia.pause();parserMedia.remove();window.parserPrimed=true};
+window.startAutoplay=(tag,method)=>{if(!window.autoplayAudio){const play=HTMLMediaElement.prototype.play;HTMLMediaElement.prototype.play=function(){window.explicitPlayCalls++;return play.apply(this,arguments)};const original=tag?document.createElement(tag):null;let parsed;if(method==='innerHTML'||method==='insertAdjacentHTML'){const container=document.createElement('div');if(method==='innerHTML')container.innerHTML='<'+tag+'></'+tag+'>';else container.insertAdjacentHTML('beforeend','<'+tag+'></'+tag+'>');parsed=container.firstChild;}window.autoplayAudio=method==='parser-first'?window.unplayed[tag]:method==='parser'?window.parserMedia:!tag?new Audio():(method==='innerHTML'||method==='insertAdjacentHTML')?parsed:method==='cloneNode'?original.cloneNode(true):method==='importNode'?document.importNode(original,true):method==='createContextualFragment'?document.createRange().createContextualFragment('<'+tag+'></'+tag+'>').firstChild:method==='createElementNS'?document.createElementNS('http://www.w3.org/1999/xhtml',tag):original;if(tag==='video')autoplayAudio.playsInline=true;autoplayAudio.addEventListener('playing',()=>{window.autoplayEvents++;document.body.dataset.autoplayPlaying='true'});['pause','ended','emptied'].forEach(type=>autoplayAudio.addEventListener(type,()=>document.body.dataset.autoplayPlaying='false'));autoplayAudio.autoplay=true;}autoplayAudio.src=${JSON.stringify(audio)};};</script>`;
 const hostPath = 'components/scene-renderers/InteractiveIframeHost.tsx';
 const playbackPath = 'components/edit/PlaybackChromeRoot.tsx';
 
@@ -103,7 +103,7 @@ import {usePlayback} from './lib/standalone-player/playback/use-playback';
 import {InteractiveScene} from './lib/standalone-player/scenes/InteractiveScene';
 const speech=[{id:'speech',type:'speech',text:'Narration',audioRef:'narration'},{id:'second',type:'speech',text:'Second narration',audioRef:'narration'}];
 const scenes=[{type:'interactive',order:0,actions:speech,content:{type:'interactive'}},{type:'interactive',order:1,actions:${restart ? 'speech' : '[]'},content:{type:'interactive'}}];
-function App(){const [index,setIndex]=useState(${restart ? 1 : 0});const p=usePlayback(scenes,index,setIndex);window.mode=()=>p.state.mode;window.caption=()=>p.state.view.caption;window.sceneIndex=()=>index;
+function App(){const [index,setIndex]=useState(${restart ? 1 : 0});const p=usePlayback(scenes,index,setIndex);window.mode=()=>p.state.mode;window.caption=()=>p.state.view.caption;window.sceneIndex=()=>index;window.sendWidget=value=>p.widgets.send('SET_WIDGET_STATE',{value});
 return <><button onClick={p.play}>Narrate</button><button onClick={p.pause}>Pause</button><button onClick={()=>setIndex(index?0:1)}>Navigate</button>{index===${restart ? 1 : 0}&&<InteractiveScene html={html} strings={{}} title="test" widgets={p.widgets}/>}</>}
 `
     : `
@@ -175,6 +175,38 @@ async function finishNarration(page: Page) {
     )
     .toBe(true);
   await page.evaluate('audios[0].pause(); audios[0].dispatchEvent(new Event("ended"))');
+}
+
+async function adjacentAutoplayStarts(page: Page, tag: string): Promise<boolean> {
+  const control = await page.context().newPage();
+  try {
+    const html = `<button id="start">Start</button><script>document.querySelector('button').onclick=()=>{const container=document.createElement('div');container.insertAdjacentHTML('beforeend','<${tag}></${tag}>');window.parserMedia=container.firstChild;parserMedia.playsInline=true;parserMedia.autoplay=true;parserMedia.src=${JSON.stringify(audio)}};</script>`;
+    await control.route('http://localhost/parser-control', (route) =>
+      route.fulfill({
+        contentType: 'text/html',
+        body: `<iframe sandbox="allow-scripts allow-forms allow-popups" srcdoc="${escapeAttribute(html)}"></iframe>`,
+      }),
+    );
+    await control.goto('http://localhost/parser-control');
+    await control.frameLocator('iframe').locator('#start').click();
+    const frame = control.frames()[1];
+    try {
+      await expect
+        .poll(
+          () =>
+            frame.evaluate(
+              'window.parserMedia && !parserMedia.paused && parserMedia.currentTime > 0',
+            ),
+          { timeout: 2000 },
+        )
+        .toBe(true);
+      return true;
+    } catch {
+      return false;
+    }
+  } finally {
+    await control.close();
+  }
 }
 
 async function finishFrameLoad(page: Page) {
@@ -373,9 +405,18 @@ for (const surface of ['app', 'standalone'] as const) {
       ).toBe(true);
     });
 
-    test('requires a fresh bridge after a form navigates to an uninstrumented document', async ({
+    test('restores the managed source after form navigation and unblocks narration', async ({
       page,
     }) => {
+      await finishFrameLoad(page);
+      let navigations = 0;
+      await page.route(/^http:\/\/localhost\/without-media-bridge(?:\?.*)?$/, (route) => {
+        navigations++;
+        return route.fulfill({
+          contentType: 'text/html',
+          body: '<p id="no-bridge">Uninstrumented document</p>',
+        });
+      });
       await page.getByRole('button', { name: 'Narrate', exact: true }).click();
       await expect
         .poll(() =>
@@ -384,46 +425,59 @@ for (const surface of ['app', 'standalone'] as const) {
           ),
         )
         .toBe(true);
+      await page.locator('iframe').evaluate((frame: HTMLIFrameElement) =>
+        frame.addEventListener(
+          'load',
+          () => {
+            (window as unknown as { sendWidget: (value: number) => void }).sendWidget(42);
+          },
+          { once: true },
+        ),
+      );
       await page.frameLocator('iframe').locator('#self-navigate').click();
-      await expect(page.frameLocator('iframe').locator('#no-bridge')).toBeVisible();
-      await page.frameLocator('iframe').locator('#play').click();
-      const child = page.frames()[1];
-      await expect
-        .poll(() =>
-          child.evaluate(
-            '!document.querySelector("audio").paused && document.querySelector("audio").currentTime > 0',
-          ),
-        )
-        .toBe(true);
-      console.log(
-        'same-frame native playback',
-        await child.evaluate('document.querySelector("audio").currentTime'),
-        await page.evaluate('mode()'),
-      );
-      await expect.poll(() => page.evaluate('mode()')).toBe('paused');
-      await page.getByRole('button', { name: 'Narrate', exact: true }).click();
-      await expect.poll(() => page.evaluate('mode()')).toBe('paused');
-      expect(await page.evaluate('narrationPaused()')).toBe(true);
-      const reloaded = page.locator('iframe').evaluate(
-        (frame: HTMLIFrameElement) =>
-          new Promise<void>((resolve) => {
-            frame.addEventListener('load', () => resolve(), { once: true });
-            frame.srcdoc = frame.srcdoc;
-          }),
-      );
+      await expect.poll(() => navigations).toBe(1);
       await expect(page.frameLocator('iframe').locator('#audio')).toBeVisible();
       await finishFrameLoad(page);
-      await reloaded;
+      await expect.poll(() => page.frames()[1].evaluate('window.widgetValues')).toEqual([42]);
+      if (surface === 'app') {
+        await page.getByRole('button', { name: 'Next scene', exact: true }).click();
+        await expect.poll(() => page.evaluate('window.destinationSpeechStarted')).toBe(true);
+        await expect.poll(() => page.evaluate('mode()')).toBe('playing');
+      } else {
+        await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+        await finishNarration(page);
+        await expect.poll(() => page.evaluate('caption()')).toBe('Second narration');
+        await expect.poll(() => page.evaluate('narrationPaused()')).toBe(false);
+      }
+    });
+
+    test('restores a navigated nested source and resumes narration after a fresh acknowledgement', async ({
+      page,
+    }) => {
+      await finishFrameLoad(page);
+      await page.frames()[1].evaluate('document.querySelector("#nested").style.display="block"');
+      const inner = page.frameLocator('iframe').frameLocator('#nested').frameLocator('#inner');
+      await expect(inner.locator('#navigate-nested')).toBeVisible();
+      let navigations = 0;
+      await page.route(/^http:\/\/localhost\/without-media-bridge(?:\?.*)?$/, (route) => {
+        navigations++;
+        return route.fulfill({
+          contentType: 'text/html',
+          body: '<p>Uninstrumented nested document</p>',
+        });
+      });
       await page.getByRole('button', { name: 'Narrate', exact: true }).click();
-      await expect.poll(() => page.evaluate('narrationPaused()')).toBe(false);
-      await finishNarration(page);
-      await expect.poll(() => page.evaluate('narrationPaused()')).toBe(false);
-      expect(await page.evaluate('mode()')).toBe('playing');
-      expect(await page.locator('iframe').getAttribute('sandbox')).not.toContain(
-        'allow-same-origin',
-      );
-      if (surface === 'app') expect(await page.evaluate('cursor()')).toBe(2);
-      else expect(await page.evaluate('caption()')).toBe('Second narration');
+      await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
+      await inner.locator('#navigate-nested').click();
+      await expect.poll(() => navigations).toBe(1);
+      await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+      await expect(inner.locator('#navigate-nested')).toBeVisible();
+      await expect
+        .poll(() => inner.locator('body').evaluate(() => document.readyState))
+        .toBe('complete');
+      await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+      await expect.poll(() => page.evaluate('mode()')).toBe('playing');
+      await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
     });
 
     test('restores bridge-suspended WebAudio on a later user gesture without authored resume', async ({
@@ -849,6 +903,7 @@ for (const surface of ['app', 'standalone'] as const) {
       'createElementNS-audio',
       'createElementNS-video',
       ...[
+        'insertAdjacentHTML',
         'parser-first',
         'parser',
         'cloneNode',
@@ -858,6 +913,16 @@ for (const surface of ['app', 'standalone'] as const) {
       ].flatMap((method) => ['audio', 'video'].map((tag) => `${method}-${tag}`)),
     ]) {
       test(`coordinates detached ${creation} playback and reuse`, async ({ page, browserName }) => {
+        if (creation.startsWith('insertAdjacentHTML') && browserName === 'chromium') {
+          const starts = await adjacentAutoplayStarts(
+            page,
+            creation.endsWith('video') ? 'video' : 'audio',
+          );
+          test.skip(
+            !starts,
+            'Detached insertAdjacentHTML media does not start in the same-engine no-bridge native control.',
+          );
+        }
         test.skip(
           creation.startsWith('innerHTML') && browserName === 'chromium',
           'Detached parser-created media does not start in the Chromium no-bridge native control.',

@@ -266,6 +266,7 @@ function PooledIframe({
   );
 
   const mediaSession = useRef<ReturnType<typeof createInteractiveMediaSession> | null>(null);
+  const loadGeneration = useRef(0);
   const mediaId = mediaDocumentId(entry.srcDoc);
   useLayoutEffect(() => {
     if (!iframeRef.current || !mediaId) return;
@@ -509,13 +510,28 @@ function PooledIframe({
         <iframe
           ref={iframeRef}
           srcDoc={observation.html}
-          onLoad={() => {
+          onLoad={async (event) => {
+            const frame = event.currentTarget;
+            if (frame !== iframeRef.current) return;
+            const load = ++loadGeneration.current;
+            const session = mediaSession.current;
+            const current = useWidgetIframeStore.getState();
+            if (current.documentTokenByScene[sceneId] !== documentToken) return;
+            const send = current.sendMessageByScene[sceneId];
+            if (send) registerIframe(sceneId, send, documentToken);
             observationSession.current?.dispose();
             observationSession.current =
               iframeRef.current && observation.identity
                 ? createObservationSession(iframeRef.current, observation.identity)
                 : null;
-            mediaSession.current?.loaded(visible);
+            if (session && !(await session.loaded(visible))) return;
+            if (
+              load !== loadGeneration.current ||
+              frame !== iframeRef.current ||
+              session !== mediaSession.current ||
+              useWidgetIframeStore.getState().documentTokenByScene[sceneId] !== documentToken
+            )
+              return;
             markIframeReady(sceneId);
           }}
           src={entry.srcDoc ? undefined : entry.src}

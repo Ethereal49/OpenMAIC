@@ -16,8 +16,9 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function fixture() {
+function fixture(html?: string) {
   const frame = document.createElement('iframe');
+  if (html) frame.srcdoc = html;
   document.body.append(frame);
   const played = vi.fn();
   const post = vi.spyOn(frame.contentWindow!, 'postMessage');
@@ -105,6 +106,7 @@ function bridgeFixture() {
   NativeAudio.prototype = Media.prototype;
   class FrameElement extends FrameNode {
     style = { cssText: '', width: '', height: '' };
+    parentNode: FrameElement | null = null;
     elements: Media[] = [];
     private html = '';
     get innerHTML() {
@@ -117,6 +119,14 @@ function bridgeFixture() {
     }
     querySelectorAll() {
       return this.elements;
+    }
+    insertAdjacentHTML(position: string, html: string) {
+      if (html === 'invalid') throw new TypeError('invalid HTML');
+      if (!['beforebegin', 'afterbegin', 'beforeend', 'afterend'].includes(position))
+        throw new SyntaxError('invalid position');
+      const target = ['beforebegin', 'afterend'].includes(position) ? this.parentNode : this;
+      if (!target) throw new Error('no parent');
+      target.elements.push(new Media());
     }
   }
   class Parser {
@@ -157,6 +167,7 @@ function bridgeFixture() {
   const script = mediaBridgeScript('test').replace(/^<script[^>]*>|<\/script>$/g, '');
   const frameDocument = new FrameDocument();
   const nativePlay = vi.spyOn(frameDocument, 'addEventListener');
+  const nativeInsert = vi.spyOn(FrameElement.prototype, 'insertAdjacentHTML');
   runInNewContext(script, {
     window: frameWindow,
     document: frameDocument,
@@ -182,6 +193,7 @@ function bridgeFixture() {
     Media,
     FrameNode,
     FrameElement,
+    nativeInsert,
     Parser,
     frameDocument,
     added: (...elements: EventTarget[]) =>
@@ -206,6 +218,80 @@ function bridgeFixture() {
 }
 
 describe('injected media lifetime', () => {
+  it('restores an unresponsive nested source once and accepts its new generation', async () => {
+    vi.useFakeTimers();
+    const { frameDocument, frameWindow, control } = bridgeFixture();
+    const source = mediaBridgeScript('child');
+    const reset = vi.fn();
+    const postMessage = vi.fn();
+    const addEventListener = vi.fn();
+    const frame = {
+      isConnected: true,
+      contentWindow: { postMessage },
+      getAttribute: (name: string) => (name === 'srcdoc' ? source : null),
+      addEventListener,
+      removeEventListener: vi.fn(),
+    };
+    Object.defineProperty(frame, 'srcdoc', { set: reset });
+    frameDocument.frames.push(frame);
+    control({ action: 'sync', enabled: true });
+    const loaded = addEventListener.mock.calls.find(([type]) => type === 'load')![1];
+    loaded();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(reset).toHaveBeenCalledExactlyOnceWith(source);
+    loaded();
+    const generation = postMessage.mock.calls.at(-1)![0].generation;
+    frameWindow.dispatchEvent(
+      new MessageEvent('message', {
+        source: frame.contentWindow as unknown as Window,
+        data: {
+          type: 'maic:media:state:v1',
+          documentId: 'child',
+          generation,
+          requestId: 0,
+          playing: false,
+        },
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(reset).toHaveBeenCalledTimes(1);
+    expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ playing: false }),
+      '*',
+    );
+  });
+
+  it.each(['beforebegin', 'afterbegin', 'beforeend', 'afterend'])(
+    'observes detached insertAdjacentHTML media at %s without changing native semantics',
+    async (position) => {
+      const { FrameElement, nativeInsert, media, control } = bridgeFixture();
+      const parent = new FrameElement();
+      const element = new FrameElement();
+      element.parentNode = ['beforebegin', 'afterend'].includes(position) ? parent : null;
+      const target = element.parentNode ?? element;
+      expect(element.insertAdjacentHTML(position, '<audio>')).toBeUndefined();
+      expect(nativeInsert.mock.contexts[0]).toBe(element);
+      expect(nativeInsert.mock.calls[0]).toEqual([position, '<audio>']);
+      expect(media.size).toBe(0);
+      const audio = target.elements[0];
+      audio.paused = false;
+      audio.dispatchEvent(new Event('play'));
+      expect(media.has(audio)).toBe(true);
+      control({ action: 'pause', requestId: 1 });
+      await Promise.resolve();
+      expect(audio.paused).toBe(true);
+      expect(media.size).toBe(0);
+      let error: unknown;
+      try {
+        element.insertAdjacentHTML(position, 'invalid');
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBe(nativeInsert.mock.results[1].value);
+      expect(error).toBeInstanceOf(TypeError);
+    },
+  );
+
   it('observes parser-added media removed before its first native play', async () => {
     const { Media, FrameElement, added, media, control, frameWindow } = bridgeFixture();
     const element = new Media();
@@ -740,6 +826,66 @@ describe('bridge-owned AudioContext suspension', () => {
 });
 
 describe('interactive media boundary', () => {
+  it('keeps an in-flight pause through load and requires its new-generation acknowledgement', async () => {
+    const { session, post, message } = fixture();
+    const pause = session.pause();
+    const id = post.mock.calls.at(-1)![0].requestId;
+    const oldGeneration = post.mock.calls.at(-1)![0].generation;
+    const ready = session.loaded();
+    let result: boolean | undefined;
+    void pause.then((value) => {
+      result = value;
+    });
+    message({ ...playing, generation: oldGeneration, requestId: id, playing: false });
+    await Promise.resolve();
+    expect(result).toBeUndefined();
+    message({ ...playing, requestId: id, playing: false });
+    await expect(pause).resolves.toBe(true);
+    await expect(ready).resolves.toBe(true);
+  });
+
+  it('does not restore an obsolete source or accept an old load acknowledgement', async () => {
+    vi.useFakeTimers();
+    const { frame, session, message, post } = fixture(mediaBridgeScript('current'));
+    const reset = vi.spyOn(frame, 'srcdoc', 'set').mockImplementation(() => {});
+    const first = session.loaded();
+    const oldGeneration = post.mock.calls.at(-1)![0].generation;
+    const current = session.loaded();
+    await expect(first).resolves.toBe(false);
+    message({ ...playing, generation: oldGeneration, playing: false });
+    frame.setAttribute('srcdoc', mediaBridgeScript('current') + '<p>Replacement</p>');
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(current).resolves.toBe(false);
+    expect(reset).not.toHaveBeenCalled();
+  });
+
+  it('restores the managed source after an unresponsive navigation without looping', async () => {
+    vi.useFakeTimers();
+    const source = mediaBridgeScript('current');
+    const { frame, session } = fixture(source);
+    const reset = vi.spyOn(frame, 'srcdoc', 'set').mockImplementation(() => {});
+    session.loaded();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(reset).toHaveBeenCalledExactlyOnceWith(source);
+    session.loaded();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(reset).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a healthy document and cancels navigation recovery on disposal', async () => {
+    vi.useFakeTimers();
+    const { frame, session, message } = fixture(mediaBridgeScript('current'));
+    const reset = vi.spyOn(frame, 'srcdoc', 'set').mockImplementation(() => {});
+    session.loaded();
+    message({ ...playing, playing: false });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(reset).not.toHaveBeenCalled();
+    session.loaded();
+    session.dispose();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(reset).not.toHaveBeenCalled();
+  });
+
   it('rejects a pause when the loaded document never bootstraps its bridge', async () => {
     vi.useFakeTimers();
     const { session } = fixture();
