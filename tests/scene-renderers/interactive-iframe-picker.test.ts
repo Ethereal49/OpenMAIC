@@ -58,6 +58,61 @@ afterEach(() => {
 });
 
 describe('InteractiveIframeHost picker messages', () => {
+  it('queues widget actions while a URL frame is closed and flushes them on reopening', async () => {
+    useInteractiveIframePool.setState({
+      entries: {
+        'scene-web': {
+          src: 'https://example.test/activity',
+          rect: { left: 0, top: 0, width: 960, height: 540 },
+          clip: { left: 0, top: 0, width: 960, height: 540 },
+          owner: 'test-owner',
+          tick: 1,
+        },
+      },
+      activeSceneId: 'scene-web',
+      tick: 1,
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(createElement(InteractiveIframeHost)));
+      const open = () =>
+        Array.from(document.querySelectorAll('button')).find(
+          (button) => button.textContent === 'chat.externalInteractive.open',
+        )!;
+      await act(async () => open().click());
+      await act(async () => document.querySelector('iframe')!.dispatchEvent(new Event('load')));
+      expect(useWidgetIframeStore.getState().readyByScene['scene-web']).toBe(true);
+      let pause: void | Promise<boolean>;
+      await act(async () => {
+        pause = useWidgetIframeStore
+          .getState()
+          .sendMessageByScene['scene-web']('maic:media:control:v1', {});
+      });
+      await expect(pause!).resolves.toBe(true);
+      expect(document.querySelector('iframe')).toBeNull();
+      const send = useWidgetIframeStore.getState().getSendMessage('scene-web')!;
+      send('SET_WIDGET_STATE', { value: 42 });
+      expect(useWidgetIframeStore.getState().pendingMessagesByScene['scene-web']).toContainEqual({
+        type: 'SET_WIDGET_STATE',
+        payload: { value: 42 },
+      });
+      expect(useWidgetIframeStore.getState().readyByScene['scene-web']).toBe(false);
+      await act(async () => open().click());
+      const frame = document.querySelector('iframe')!;
+      const post = vi.spyOn(frame.contentWindow!, 'postMessage');
+      expect(post).not.toHaveBeenCalled();
+      await act(async () => frame.dispatchEvent(new Event('load')));
+      expect(post.mock.calls.filter(([data]) => data.type === 'SET_WIDGET_STATE')).toEqual([
+        [{ type: 'SET_WIDGET_STATE', value: 42 }, '*'],
+      ]);
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+    }
+  });
+
   it('flushes queued widget actions on the iframe load event', async () => {
     useInteractiveIframePool.setState({
       entries: {

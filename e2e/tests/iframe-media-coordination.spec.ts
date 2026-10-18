@@ -65,15 +65,16 @@ const activity = `<button id="audio" onclick="document.querySelector('audio').pl
 <button id="autoplay-createElement-video" onclick="startAutoplay('video','createElement')">DOM video</button>
 <button id="autoplay-createElementNS-audio" onclick="startAutoplay('audio','createElementNS')">DOM NS audio</button>
 <button id="autoplay-createElementNS-video" onclick="startAutoplay('video','createElementNS')">DOM NS video</button>
-${['parser', 'cloneNode', 'importNode', 'createContextualFragment', 'innerHTML'].flatMap((method) => ['audio', 'video'].map((tag) => `<button id="autoplay-${method}-${tag}" onclick="startAutoplay('${tag}','${method}')">${method} ${tag}</button>`)).join('')}
+${['parser-first', 'parser', 'cloneNode', 'importNode', 'createContextualFragment', 'innerHTML'].flatMap((method) => ['audio', 'video'].map((tag) => `<button id="autoplay-${method}-${tag}" onclick="startAutoplay('${tag}','${method}')">${method} ${tag}</button>`)).join('')}
 <button id="context" onclick="if(!window.ctx){ctx=new AudioContext();let o=ctx.createOscillator();o.connect(ctx.destination);o.start()}ctx.resume()">WebAudio</button>
 ${['audio', 'video'].map((tag) => `<button id="prime-parser-${tag}" onclick="primeParserMedia('${tag}')">Prime parser ${tag}</button><${tag} id="parser-${tag}" src="${audio}" loop></${tag}>`).join('')}
+<audio id="unplayed-audio" loop></audio><video id="unplayed-video" loop></video><script>window.unplayed={audio:document.getElementById('unplayed-audio'),video:document.getElementById('unplayed-video')};unplayed.audio.remove();unplayed.video.remove();</script>
 <button id="reuse-context" onclick="if(!window.ctx){ctx=new AudioContext();let o=ctx.createOscillator();o.connect(ctx.destination);o.start();ctx.resume()}">Reuse WebAudio</button>
 <iframe id="nested" style="display:none" srcdoc="${escapeAttribute(`<iframe id="inner" srcdoc="${escapeAttribute(nestedMedia)}"></iframe>`)}"></iframe>
 <form action="http://localhost/without-media-bridge"><button id="self-navigate">Navigate frame</button></form>
 <script>window.detached=new Audio(${JSON.stringify(audio)});detached.loop=true;
 window.autoplayEvents=0;window.explicitPlayCalls=0;window.primeParserMedia=async(tag)=>{window.parserMedia=document.getElementById('parser-'+tag);parserMedia.src=${JSON.stringify(audio)};await parserMedia.play();parserMedia.pause();parserMedia.remove();window.parserPrimed=true};
-window.startAutoplay=(tag,method)=>{if(!window.autoplayAudio){const play=HTMLMediaElement.prototype.play;HTMLMediaElement.prototype.play=function(){window.explicitPlayCalls++;return play.apply(this,arguments)};const original=tag?document.createElement(tag):null;let parsed;if(method==='innerHTML'){const container=document.createElement('div');container.innerHTML='<'+tag+'></'+tag+'>';parsed=container.firstChild;}window.autoplayAudio=method==='parser'?window.parserMedia:!tag?new Audio():method==='innerHTML'?parsed:method==='cloneNode'?original.cloneNode(true):method==='importNode'?document.importNode(original,true):method==='createContextualFragment'?document.createRange().createContextualFragment('<'+tag+'></'+tag+'>').firstChild:method==='createElementNS'?document.createElementNS('http://www.w3.org/1999/xhtml',tag):original;if(tag==='video')autoplayAudio.playsInline=true;autoplayAudio.addEventListener('playing',()=>{window.autoplayEvents++;document.body.dataset.autoplayPlaying='true'});['pause','ended','emptied'].forEach(type=>autoplayAudio.addEventListener(type,()=>document.body.dataset.autoplayPlaying='false'));autoplayAudio.autoplay=true;}autoplayAudio.src=${JSON.stringify(audio)};};</script>`;
+window.startAutoplay=(tag,method)=>{if(!window.autoplayAudio){const play=HTMLMediaElement.prototype.play;HTMLMediaElement.prototype.play=function(){window.explicitPlayCalls++;return play.apply(this,arguments)};const original=tag?document.createElement(tag):null;let parsed;if(method==='innerHTML'){const container=document.createElement('div');container.innerHTML='<'+tag+'></'+tag+'>';parsed=container.firstChild;}window.autoplayAudio=method==='parser-first'?window.unplayed[tag]:method==='parser'?window.parserMedia:!tag?new Audio():method==='innerHTML'?parsed:method==='cloneNode'?original.cloneNode(true):method==='importNode'?document.importNode(original,true):method==='createContextualFragment'?document.createRange().createContextualFragment('<'+tag+'></'+tag+'>').firstChild:method==='createElementNS'?document.createElementNS('http://www.w3.org/1999/xhtml',tag):original;if(tag==='video')autoplayAudio.playsInline=true;autoplayAudio.addEventListener('playing',()=>{window.autoplayEvents++;document.body.dataset.autoplayPlaying='true'});['pause','ended','emptied'].forEach(type=>autoplayAudio.addEventListener(type,()=>document.body.dataset.autoplayPlaying='false'));autoplayAudio.autoplay=true;}autoplayAudio.src=${JSON.stringify(audio)};};</script>`;
 const hostPath = 'components/scene-renderers/InteractiveIframeHost.tsx';
 const playbackPath = 'components/edit/PlaybackChromeRoot.tsx';
 
@@ -123,7 +124,7 @@ window.proactive=null;
 let currentSceneId='s';const pauseInteractiveMedia=${sourceFunction(playbackPath, 'pauseInteractiveMedia')};
 const engine=new PlaybackEngine([currentScene],{clearEffects(){},execute(){}},new AudioPlayer(),{beforeSpeech:pauseInteractiveMedia,onModeChange:${sourceFunction(playbackPath, 'onModeChange')},onSpeechStart:${sourceFunction(playbackPath, 'onSpeechStart')},onPlaybackReadyChange:${sourceFunction(playbackPath, 'onPlaybackReadyChange')},onProactiveShow:trigger=>{window.proactive=trigger.id}});const engineRef={current:engine};
 const onMediaPlay=${sourceFunction(playbackPath, 'pauseForInteractiveMedia')};window.mode=()=>engineRef.current.getMode();
-window.cursor=()=>engineRef.current.getSnapshot().actionIndex;
+window.cursor=()=>engineRef.current.getSnapshot().actionIndex;window.widgetReady=()=>useWidgetIframeStore.getState().readyByScene.s;window.sendWidget=value=>useWidgetIframeStore.getState().getSendMessage('s')?.('SET_WIDGET_STATE',{value});window.pendingWidgets=()=>useWidgetIframeStore.getState().pendingMessagesByScene.s?.filter(m=>m.type==='SET_WIDGET_STATE').length||0;
 window.prepareDiscussion=()=>currentScene.actions.unshift({id:'delayed',type:'discussion',topic:'Question',prompt:'Discuss'});
 window.skipDiscussion=()=>engineRef.current.skipDiscussion();
 window.finishInterruption=()=>{engineRef.current.handleUserInterrupt('A question');engineRef.current.handleEndDiscussion();};
@@ -497,6 +498,44 @@ for (const surface of ['app', 'standalone'] as const) {
     }
 
     if (surface === 'app') {
+      test('queues widget actions while a URL frame is closed and flushes once after reopening', async ({
+        page,
+      }) => {
+        await page.route('http://external.test/activity', (route) =>
+          route.fulfill({
+            contentType: 'text/html',
+            body: '<p id="external">External widget</p><script>window.received=[];window.addEventListener("message",event=>{if(event.data?.type==="SET_WIDGET_STATE")received.push(event.data.value)});</script>',
+          }),
+        );
+        await page.goto('http://localhost/media-test');
+        await page.addScriptTag({ content: bundle('app', false, true) });
+        const open = page.getByRole('button', {
+          name: 'chat.externalInteractive.open',
+          exact: true,
+        });
+        await open.click();
+        await expect(page.frameLocator('iframe').locator('#external')).toBeVisible();
+        await expect.poll(() => page.evaluate('widgetReady()')).toBe(true);
+        await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+        await expect(page.locator('iframe')).toHaveCount(0);
+        await page.evaluate('sendWidget(42)');
+        expect(await page.evaluate('pendingWidgets()')).toBe(1);
+        expect(await page.evaluate('widgetReady()')).toBe(false);
+        await open.click();
+        await expect(page.frameLocator('iframe').locator('#external')).toBeVisible();
+        await expect.poll(() => page.frames()[1].evaluate('window.received')).toEqual([42]);
+        expect(await page.evaluate('pendingWidgets()')).toBe(0);
+        await page.getByRole('button', { name: 'Navigate', exact: true }).click();
+        await expect(page.locator('iframe')).toHaveCount(0);
+        await page.evaluate('sendWidget(43)');
+        expect(await page.evaluate('pendingWidgets()')).toBe(1);
+        await page.getByRole('button', { name: 'Navigate', exact: true }).click();
+        await open.click();
+        await expect(page.frameLocator('iframe').locator('#external')).toBeVisible();
+        await expect.poll(() => page.frames()[1].evaluate('window.received')).toEqual([43]);
+        expect(await page.evaluate('pendingWidgets()')).toBe(0);
+      });
+
       for (const media of ['audio', 'context']) {
         test(`coordinates uninstrumented URL ${media} by unloading before narration and reopening explicitly`, async ({
           page,
@@ -809,9 +848,14 @@ for (const surface of ['app', 'standalone'] as const) {
       'createElement-video',
       'createElementNS-audio',
       'createElementNS-video',
-      ...['parser', 'cloneNode', 'importNode', 'createContextualFragment', 'innerHTML'].flatMap(
-        (method) => ['audio', 'video'].map((tag) => `${method}-${tag}`),
-      ),
+      ...[
+        'parser-first',
+        'parser',
+        'cloneNode',
+        'importNode',
+        'createContextualFragment',
+        'innerHTML',
+      ].flatMap((method) => ['audio', 'video'].map((tag) => `${method}-${tag}`)),
     ]) {
       test(`coordinates detached ${creation} playback and reuse`, async ({ page, browserName }) => {
         test.skip(
@@ -820,7 +864,7 @@ for (const surface of ['app', 'standalone'] as const) {
         );
         await finishFrameLoad(page);
         const child = page.frames()[1];
-        if (creation.startsWith('parser-')) {
+        if (creation === 'parser-audio' || creation === 'parser-video') {
           await page
             .frameLocator('iframe')
             .locator('#prime-' + creation)

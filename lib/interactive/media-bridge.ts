@@ -294,7 +294,11 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
       changed();
     }
   });
-  if (typeof MutationObserver !== 'undefined') new MutationObserver(scanChildren).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ['srcdoc', 'sandbox'] });
+  if (typeof MutationObserver !== 'undefined') new MutationObserver(function (records) {
+    records.forEach(function (record) { record.addedNodes.forEach(observe); });
+    scanChildren();
+  }).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ['srcdoc', 'sandbox'] });
+  observe(document);
   scanChildren();
   report();
 })(__DOCUMENT_ID__);`;

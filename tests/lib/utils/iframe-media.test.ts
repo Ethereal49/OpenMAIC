@@ -39,6 +39,13 @@ function fixture() {
 const playing = { type: 'maic:media:state:v1', documentId: 'current', requestId: 0, playing: true };
 
 function bridgeFixture() {
+  const observers: Array<(records: Array<{ addedNodes: EventTarget[] }>) => void> = [];
+  class Observer {
+    constructor(callback: (records: Array<{ addedNodes: EventTarget[] }>) => void) {
+      observers.push(callback);
+    }
+    observe() {}
+  }
   const sets: Set<unknown>[] = [];
   class TrackedSet extends Set<unknown> {
     constructor(values?: Iterable<unknown>) {
@@ -158,6 +165,7 @@ function bridgeFixture() {
     Node: FrameNode,
     Element: FrameElement,
     DOMParser: Parser,
+    MutationObserver: Observer,
     Set: TrackedSet,
     setTimeout,
     clearTimeout,
@@ -176,6 +184,8 @@ function bridgeFixture() {
     FrameElement,
     Parser,
     frameDocument,
+    added: (...elements: EventTarget[]) =>
+      observers.forEach((callback) => callback([{ addedNodes: elements }])),
     Audio: (frameWindow as unknown as { Audio: AudioFactory }).Audio,
     Context: (frameWindow as unknown as { AudioContext: typeof Context }).AudioContext,
     contextSet: sets[1],
@@ -196,6 +206,28 @@ function bridgeFixture() {
 }
 
 describe('injected media lifetime', () => {
+  it('observes parser-added media removed before its first native play', async () => {
+    const { Media, FrameElement, added, media, control, frameWindow } = bridgeFixture();
+    const element = new Media();
+    const subtree = new FrameElement();
+    subtree.elements = [element];
+    added(subtree);
+    expect(media.size).toBe(0);
+    for (let i = 0; i < 2; i++) {
+      element.paused = false;
+      element.dispatchEvent(new Event('play'));
+      expect(media.has(element)).toBe(true);
+      expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ playing: true }),
+        '*',
+      );
+      control({ action: 'pause', requestId: i + 1 });
+      await Promise.resolve();
+      expect(element.paused).toBe(true);
+      expect(media.size).toBe(0);
+    }
+  });
+
   it('holds narration after a nested load that cannot acknowledge the current pause', async () => {
     vi.useFakeTimers();
     const { frameDocument, frameWindow, control } = bridgeFixture();

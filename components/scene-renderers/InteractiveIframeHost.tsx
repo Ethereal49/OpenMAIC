@@ -373,7 +373,7 @@ function PooledIframe({
       } else iframeRef.current?.contentWindow?.postMessage({ type, ...payload }, '*');
     };
     return registerIframe(sceneId, send, documentToken);
-  }, [documentToken, entry.src, sceneId, registerIframe]);
+  }, [documentToken, entry.src, sceneId, registerIframe, urlEnabled]);
 
   useEffect(() => {
     const send = getSendMessage(sceneId);
