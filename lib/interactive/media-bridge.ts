@@ -86,13 +86,30 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
       element.addEventListener(type, stopped);
     });
   }
-  // Native/autoplay starts and detached new Audio() elements both participate.
-  document.addEventListener('play', function (event) {
+  function started(event) {
     if (event.target instanceof HTMLMediaElement) {
       if (!event.target.paused && !event.target.ended && !event.target.error) watch(event.target);
       changed();
     }
-  }, true);
+  }
+  document.addEventListener('play', started, true);
+  function untrackedPlay(event) {
+    if (!media.has(event.target)) started(event);
+  }
+  var Audio = window.Audio;
+  if (Audio) window.Audio = new Proxy(Audio, {
+    apply: function (target, receiver, args) {
+      var element = Reflect.apply(target, receiver, args);
+      element.addEventListener('play', untrackedPlay);
+      return element;
+    },
+    construct: function (target, args, newTarget) {
+      var element = Reflect.construct(target, args, newTarget);
+      // Keep the observer on the element, without retaining idle elements globally.
+      element.addEventListener('play', untrackedPlay);
+      return element;
+    }
+  });
   var play = HTMLMediaElement.prototype.play;
   HTMLMediaElement.prototype.play = function () {
     var element = this;

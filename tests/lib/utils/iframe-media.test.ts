@@ -87,11 +87,16 @@ function bridgeFixture() {
       return Promise.resolve();
     }
   }
+  function NativeAudio(src = ''): Media {
+    return Object.assign(Reflect.construct(Media, [], new.target || NativeAudio), { src });
+  }
+  NativeAudio.prototype = Media.prototype;
+  type AudioFactory = { (src?: string): Media; new (src?: string): Media; prototype: Media };
   const frameWindow = new EventTarget() as EventTarget & {
     parent: { postMessage: ReturnType<typeof vi.fn> };
   };
   frameWindow.parent = { postMessage: vi.fn() };
-  Object.assign(frameWindow, { AudioContext: Context });
+  Object.assign(frameWindow, { AudioContext: Context, Audio: NativeAudio });
   const script = mediaBridgeScript('test').replace(/^<script[^>]*>|<\/script>$/g, '');
   const frameDocument = new EventTarget();
   const nativePlay = vi.spyOn(frameDocument, 'addEventListener');
@@ -111,6 +116,7 @@ function bridgeFixture() {
   control({ action: 'sync', enabled: true });
   return {
     Media,
+    Audio: (frameWindow as unknown as { Audio: AudioFactory }).Audio,
     Context: (frameWindow as unknown as { AudioContext: typeof Context }).AudioContext,
     contextSet: sets[1],
     control,
@@ -123,11 +129,52 @@ function bridgeFixture() {
     media: sets[0],
     frameWindow,
     nativePlay: (element: Media) =>
-      (nativePlay.mock.calls[0][1] as EventListener)({ target: element } as unknown as Event),
+      (nativePlay.mock.calls.find(([type]) => type === 'play')![1] as EventListener)({
+        target: element,
+      } as unknown as Event),
   };
 }
 
 describe('injected media lifetime', () => {
+  it.each(['call', 'construct'] as const)(
+    'observes detached native autoplay via Audio %s without retaining idle elements',
+    async (creation) => {
+      const { Audio, Media, media, control, frameWindow } = bridgeFixture();
+      const create = () => (creation === 'call' ? Audio('sound.wav') : new Audio('sound.wav'));
+      for (let i = 0; i < 100; i++) create();
+      expect(media.size).toBe(0);
+      expect(Audio.prototype).toBe(Media.prototype);
+      const element = create();
+      expect(element).toBeInstanceOf(Audio);
+      class CustomAudio extends Audio {}
+      expect(new CustomAudio()).toBeInstanceOf(CustomAudio);
+      // Native autoplay dispatches play without calling the patched play() method.
+      for (let i = 0; i < 2; i++) {
+        element.paused = false;
+        element.dispatchEvent(new Event('play'));
+        expect(media.size).toBe(1);
+        expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+          expect.objectContaining({ playing: true }),
+          '*',
+        );
+        control({ action: 'pause', requestId: i + 1 });
+        await Promise.resolve();
+        expect(element.paused).toBe(true);
+        expect(media.size).toBe(0);
+        expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+          expect.objectContaining({ requestId: i + 1, playing: false }),
+          '*',
+        );
+      }
+      frameWindow.parent.postMessage.mockClear();
+      await element.play();
+      expect(
+        frameWindow.parent.postMessage.mock.calls.filter(([data]) => data.playing),
+      ).toHaveLength(1);
+      element.pause();
+      expect(media.size).toBe(0);
+    },
+  );
   it('releases errored media even when paused is false and ignores its stale play event', async () => {
     const { Media, media, nativePlay, frameWindow } = bridgeFixture();
     const element = new Media();

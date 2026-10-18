@@ -466,7 +466,10 @@ export class PlaybackEngine {
 
   /** User sends a message during playback → interrupt → live mode */
   handleUserInterrupt(text: string): void {
-    const interruptedIndex = Math.max(0, this.actionIndex - (this.actionRewound ? 0 : 1));
+    const interruptedIndex =
+      this.pendingSpeech?.generation === this.playbackGeneration
+        ? this.pendingSpeech.actionIndex
+        : Math.max(0, this.actionIndex - (this.actionRewound ? 0 : 1));
     this.invalidatePlaybackGeneration();
     if (this.mode === 'playing' || this.mode === 'paused') {
       // Pending work already owns the cursor; otherwise replay the interrupted
@@ -627,6 +630,8 @@ export class PlaybackEngine {
       if (this.mode !== 'playing' || !this.isCurrentGeneration(generation)) return;
     }
 
+    const pending = action.type === 'speech' ? { generation, actionIndex: this.actionIndex } : null;
+    this.pendingSpeech = pending;
     if (action.type === 'speech' && this.callbacks.beforeSpeech) {
       const silent = await this.callbacks.beforeSpeech();
       if (this.mode !== 'playing' || !this.isCurrentGeneration(generation)) return;
@@ -685,8 +690,6 @@ export class PlaybackEngine {
         // which would hang playback on that slide.
         const hasText = !!speechAction.text.trim();
 
-        const pending = { generation, actionIndex: this.actionIndex - 1 };
-        this.pendingSpeech = pending;
         this.audioPlayer
           // The legacy URL of an unconverted pair rides along as the
           // fallback of last resort; converted documents carry no audioUrl.

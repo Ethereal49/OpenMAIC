@@ -156,6 +156,66 @@ describe('AudioPlayer narration element', () => {
     engine.stop();
   });
 
+  it.each(['direct', 'paused', 'restarted'] as const)(
+    'restores the second speech interrupted during silence preflight (%s)',
+    async (interruption) => {
+      stubObjectUrl();
+      const { instances } = stubAudio();
+      const { AudioPlayer } = await import('@/lib/utils/audio-player');
+      const { PlaybackEngine } = await import('@/lib/playback/engine');
+      let release!: (silent: boolean) => void;
+      const preflight = new Promise<boolean>((resolve) => {
+        release = resolve;
+      });
+      const beforeSpeech = vi
+        .fn()
+        .mockResolvedValue(true)
+        .mockResolvedValueOnce(true)
+        .mockReturnValueOnce(preflight);
+      const engine = new PlaybackEngine(
+        [
+          {
+            id: 'scene',
+            actions: [
+              { id: 'a', type: 'speech', text: 'First', audioId: 'audio-1' },
+              { id: 'b', type: 'speech', text: 'Second', audioId: 'audio-2' },
+            ],
+          },
+        ] as Scene[],
+        { clearEffects: vi.fn() } as unknown as ActionEngine,
+        new AudioPlayer(),
+        { beforeSpeech },
+      );
+      engine.start();
+      await vi.waitFor(() => expect(instances[0]?.play).toHaveBeenCalledOnce());
+      instances[0].ended = true;
+      instances[0].onended?.();
+      expect(beforeSpeech).toHaveBeenCalledTimes(2);
+      if (interruption === 'paused') engine.pause();
+      if (interruption === 'restarted') {
+        // The old preflight must not clear ownership of the new pending one.
+        engine.handleUserInterrupt('First question');
+        engine.handleEndDiscussion();
+        beforeSpeech.mockReturnValueOnce(new Promise(() => {}));
+        engine.continuePlayback();
+        expect(beforeSpeech).toHaveBeenCalledTimes(3);
+        release(true);
+        await Promise.resolve();
+        engine.pause();
+      }
+      engine.handleUserInterrupt('A question');
+      release(true);
+      await Promise.resolve();
+      engine.handleEndDiscussion();
+      expect(engine.getSnapshot().actionIndex).toBe(1);
+      beforeSpeech.mockResolvedValue(true);
+      engine.continuePlayback();
+      await vi.waitFor(() => expect(getMock).toHaveBeenLastCalledWith('audio-2'));
+      expect(instances[0].play).toHaveBeenCalledTimes(2);
+      engine.stop();
+    },
+  );
+
   it('reports the end of each line through a single assigned handler', async () => {
     stubObjectUrl();
     const { instances } = stubAudio('mobile');
