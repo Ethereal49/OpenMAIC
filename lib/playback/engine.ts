@@ -578,15 +578,21 @@ export class PlaybackEngine {
     return { action: res.action, sceneId: res.sceneId };
   }
 
-  private fireVisualCue(action: Extract<Action, { type: 'spotlight' | 'laser' }>): void {
+  private fireVisualCue(
+    action: Extract<Action, { type: 'spotlight' | 'laser' }>,
+    actionIndex: number,
+  ): void {
     this.actionEngine.execute(action);
-    this.callbacks.onEffectFire?.({
-      kind: action.type,
-      targetId: action.elementId,
-      ...(action.type === 'spotlight'
-        ? { dimOpacity: action.dimOpacity }
-        : { color: action.color }),
-    } as Effect);
+    this.callbacks.onEffectFire?.(
+      {
+        kind: action.type,
+        targetId: action.elementId,
+        ...(action.type === 'spotlight'
+          ? { dimOpacity: action.dimOpacity }
+          : { color: action.color }),
+      } as Effect,
+      actionIndex,
+    );
   }
 
   /**
@@ -625,12 +631,13 @@ export class PlaybackEngine {
       for (let i = getSpeechVisualCueStartIndex(actions, targetIndex); i < targetIndex; i++) {
         if (this.mode !== 'playing' || !this.isCurrentGeneration(generation)) return;
         const cue = actions[i];
-        if (cue.type === 'spotlight' || cue.type === 'laser') this.fireVisualCue(cue);
+        if (cue.type === 'spotlight' || cue.type === 'laser') this.fireVisualCue(cue, i);
       }
       if (this.mode !== 'playing' || !this.isCurrentGeneration(generation)) return;
     }
 
-    const pending = action.type === 'speech' ? { generation, actionIndex: this.actionIndex } : null;
+    const actionIndex = this.actionIndex;
+    const pending = action.type === 'speech' ? { generation, actionIndex } : null;
     this.pendingSpeech = pending;
     if (action.type === 'speech' && this.callbacks.beforeSpeech) {
       const silent = await this.callbacks.beforeSpeech();
@@ -652,7 +659,7 @@ export class PlaybackEngine {
     switch (action.type) {
       case 'speech': {
         const speechAction = action as SpeechAction;
-        this.callbacks.onSpeechStart?.(speechAction.text);
+        this.callbacks.onSpeechStart?.(speechAction.text, actionIndex);
 
         // onEnded → processNext; if paused, resume() will call processNext
         this.audioPlayer.onEnded(() => {
@@ -724,7 +731,7 @@ export class PlaybackEngine {
       case 'spotlight':
       case 'laser': {
         // Fire-and-forget visual effects via ActionEngine
-        this.fireVisualCue(action);
+        this.fireVisualCue(action, actionIndex);
         // Don't block — continue immediately (use queueMicrotask to avoid
         // stack overflow from deep synchronous recursion when many consecutive
         // spotlight/laser actions appear in sequence)

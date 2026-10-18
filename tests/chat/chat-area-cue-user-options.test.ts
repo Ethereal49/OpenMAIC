@@ -5,6 +5,13 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { ChatArea, type ChatAreaRef } from '@/components/chat/chat-area';
 import type { ChatSession } from '@/lib/types/chat';
 import { ActionEngine } from '@/lib/action/engine';
+import { PlaybackEngine } from '@/lib/playback/engine';
+import { AudioPlayer } from '@/lib/utils/audio-player';
+import * as audioBytes from '@/lib/media/resolve-audio-bytes';
+import type { Scene } from '@/lib/types/stage';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
+import ts from 'typescript';
 
 const fixture = vi.hoisted(() => ({
   state: {
@@ -36,6 +43,112 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.useRealTimers();
+});
+
+it('persists a pending lecture sentence once when the real player retries it', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  vi.useFakeTimers();
+  fixture.state.chats = [];
+  let release!: (blob: Blob) => void;
+  const bytes = vi.spyOn(audioBytes, 'resolveAudioBlob').mockReturnValueOnce(
+    new Promise((resolve) => {
+      release = resolve;
+    }),
+  );
+  class Media {
+    src = '';
+    paused = true;
+    ended = false;
+    currentTime = 0;
+    onended: (() => void) | null = null;
+    async play() {
+      this.paused = false;
+    }
+    pause() {
+      this.paused = true;
+    }
+    removeAttribute() {
+      this.src = '';
+    }
+    load() {}
+  }
+  vi.stubGlobal('Audio', Media);
+  class BlobURL extends URL {}
+  Object.assign(BlobURL, { createObjectURL: () => 'blob:lecture', revokeObjectURL() {} });
+  vi.stubGlobal('URL', BlobURL);
+  const root = createRoot(document.createElement('div'));
+  const ref = createRef<ChatAreaRef>();
+  let engine: PlaybackEngine | undefined;
+  try {
+    await act(async () => root.render(createElement(ChatArea, { ref })));
+    let sessionId = '';
+    await act(async () => {
+      sessionId = await ref.current!.startLecture('scene');
+    });
+    const file = ts.createSourceFile(
+      'PlaybackChromeRoot.tsx',
+      readFileSync('components/edit/PlaybackChromeRoot.tsx', 'utf8'),
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TSX,
+    );
+    let callback = '';
+    const visit = (node: ts.Node) => {
+      if (ts.isPropertyAssignment(node) && node.name.getText(file) === 'onSpeechStart')
+        callback = node.initializer.getText(file);
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+    expect(callback).not.toBe('');
+    // Run the production owner callback against the real ChatArea and StreamBuffer.
+    const onSpeechStart = vi.fn(
+      runInNewContext(
+        ts.transpileModule('(' + callback + ')', {
+          compilerOptions: { target: ts.ScriptTarget.ES2022 },
+        }).outputText,
+        {
+          lectureSessionIdRef: { current: sessionId },
+          chatAreaRef: ref,
+          lectureActionCounterRef: { current: 0 },
+          setLectureSpeech() {},
+          setActiveBubbleId() {},
+        },
+      ) as (text: string, actionIndex: number) => void,
+    );
+    engine = new PlaybackEngine(
+      [
+        {
+          id: 'scene',
+          actions: [{ id: 'line', type: 'speech', text: 'First line', audioId: 'line' }],
+        },
+      ] as Scene[],
+      { clearEffects() {} } as unknown as ActionEngine,
+      new AudioPlayer(),
+      { onSpeechStart },
+    );
+    await act(async () => engine!.start());
+    expect(bytes).toHaveBeenCalledOnce();
+    await act(async () => {
+      engine!.pause();
+      ref.current!.pauseBuffer(sessionId);
+      release(new Blob(['audio']));
+      bytes.mockResolvedValue(new Blob(['audio']));
+      await engine!.resume();
+      ref.current!.resumeBuffer(sessionId);
+      await vi.advanceTimersByTimeAsync(6000);
+    });
+    expect(onSpeechStart.mock.calls).toEqual([
+      ['First line', 0],
+      ['First line', 0],
+    ]);
+    const lecture = fixture.state.chats.find((s) => s.id === sessionId);
+    expect(
+      lecture?.messages[0].parts.filter((part) => part.type === 'text').map((part) => part.text),
+    ).toEqual(['First line']);
+  } finally {
+    engine?.stop();
+    act(() => root.unmount());
+  }
 });
 
 it.each([false, true])(

@@ -51,12 +51,16 @@ const activity = `<button id="audio" onclick="document.querySelector('audio').pl
 <button id="video" onclick="document.querySelector('video').play()">Frame video</button><video id="v" src="${audio}" loop></video>
 <button id="detached" onclick="detached.play()">Detached audio</button>
 <button id="autoplay" onclick="startAutoplay()">Detached autoplay</button>
+<button id="autoplay-createElement-audio" onclick="startAutoplay('audio','createElement')">DOM audio</button>
+<button id="autoplay-createElement-video" onclick="startAutoplay('video','createElement')">DOM video</button>
+<button id="autoplay-createElementNS-audio" onclick="startAutoplay('audio','createElementNS')">DOM NS audio</button>
+<button id="autoplay-createElementNS-video" onclick="startAutoplay('video','createElementNS')">DOM NS video</button>
 <button id="context" onclick="if(!window.ctx){ctx=new AudioContext();let o=ctx.createOscillator();o.connect(ctx.destination);o.start()}ctx.resume()">WebAudio</button>
 <button id="reuse-context" onclick="if(!window.ctx){ctx=new AudioContext();let o=ctx.createOscillator();o.connect(ctx.destination);o.start();ctx.resume()}">Reuse WebAudio</button>
 <form action="http://localhost/without-media-bridge"><button id="self-navigate">Navigate frame</button></form>
 <script>window.detached=new Audio(${JSON.stringify(audio)});detached.loop=true;
 window.autoplayEvents=0;window.explicitPlayCalls=0;
-window.startAutoplay=()=>{if(!window.autoplayAudio){const play=HTMLMediaElement.prototype.play;HTMLMediaElement.prototype.play=function(){window.explicitPlayCalls++;return play.apply(this,arguments)};window.autoplayAudio=new Audio();autoplayAudio.addEventListener('playing',()=>window.autoplayEvents++);autoplayAudio.autoplay=true;}autoplayAudio.src=${JSON.stringify(audio)};};</script>`;
+window.startAutoplay=(tag,method)=>{if(!window.autoplayAudio){const play=HTMLMediaElement.prototype.play;HTMLMediaElement.prototype.play=function(){window.explicitPlayCalls++;return play.apply(this,arguments)};window.autoplayAudio=!tag?new Audio():method==='createElementNS'?document.createElementNS('http://www.w3.org/1999/xhtml',tag):document.createElement(tag);if(tag==='video')autoplayAudio.playsInline=true;autoplayAudio.addEventListener('playing',()=>{window.autoplayEvents++;document.body.dataset.autoplayPlaying='true'});['pause','ended','emptied'].forEach(type=>autoplayAudio.addEventListener(type,()=>document.body.dataset.autoplayPlaying='false'));autoplayAudio.autoplay=true;}autoplayAudio.src=${JSON.stringify(audio)};};</script>`;
 const hostPath = 'components/scene-renderers/InteractiveIframeHost.tsx';
 const playbackPath = 'components/edit/PlaybackChromeRoot.tsx';
 
@@ -71,7 +75,7 @@ import React,{useCallback,useLayoutEffect,useEffect,useMemo,useRef,useState} fro
 import {createRoot} from 'react-dom/client';
 import {patchHtmlForIframe} from './lib/utils/iframe';
 import {createInteractiveMediaSession,mediaDocumentId,MEDIA_CONTROL} from './lib/interactive/media-bridge';
-const NativeAudio=window.Audio;window.audios=[];window.Audio=function(...args){const a=new NativeAudio(...args);window.audios.push(a);return a;};
+const NativeAudio=window.Audio;window.audios=[];document.body.dataset.narrationPlaying='false';window.Audio=function(...args){const a=new NativeAudio(...args);if(!window.audios.length)['playing','pause','ended','emptied'].forEach(type=>a.addEventListener(type,()=>document.body.dataset.narrationPlaying=String(type==='playing')));window.audios.push(a);return a;};
 const html=${JSON.stringify(patchHtmlForIframe(activity, undefined, 'current').replace('<script data-maic-media-document', dropControls + '<script data-maic-media-document'))};
 ${
   surface === 'standalone'
@@ -400,28 +404,43 @@ for (const surface of ['app', 'standalone'] as const) {
       });
     }
 
-    test('tracks native detached autoplay and its reuse without explicit play calls', async ({
-      page,
-    }) => {
-      await finishFrameLoad(page);
-      await page.getByRole('button', { name: 'Narrate', exact: true }).click();
-      await expect.poll(() => page.evaluate('narrationPaused()')).toBe(false);
-      const child = page.frames()[1];
-      for (let i = 0; i < 2; i++) {
-        const starts = await child.evaluate<number>('window.autoplayEvents');
-        await page.frameLocator('iframe').locator('#autoplay').click();
-        // Confirm native playback actually started before asserting bridge behavior.
-        await expect.poll(() => child.evaluate('window.autoplayEvents')).toBeGreaterThan(starts);
-        await expect.poll(() => child.evaluate('autoplayAudio.currentTime')).toBeGreaterThan(0);
-        expect(await child.evaluate('window.explicitPlayCalls')).toBe(0);
-        expect(await child.evaluate('autoplayAudio.paused')).toBe(false);
-        await expect.poll(() => page.evaluate('mode()')).toBe('paused');
-        expect(await page.evaluate('narrationPaused()')).toBe(true);
+    for (const creation of [
+      'Audio',
+      'createElement-audio',
+      'createElement-video',
+      'createElementNS-audio',
+      'createElementNS-video',
+    ]) {
+      test(`${creation === 'Audio' ? 'tracks native detached autoplay' : 'tracks DOM-created detached autoplay ' + creation} and its reuse without explicit play calls`, async ({
+        page,
+      }) => {
+        await finishFrameLoad(page);
         await page.getByRole('button', { name: 'Narrate', exact: true }).click();
-        await expect.poll(() => child.evaluate('autoplayAudio.paused')).toBe(true);
-        await expect.poll(() => page.evaluate('narrationPaused()')).toBe(false);
-      }
-    });
+        await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
+        const child = page.frames()[1];
+        for (let i = 0; i < 2; i++) {
+          const starts = await child.evaluate<number>('window.autoplayEvents');
+          await page
+            .frameLocator('iframe')
+            .locator(creation === 'Audio' ? '#autoplay' : '#autoplay-' + creation)
+            .click();
+          // Confirm native playback actually started before asserting bridge behavior.
+          await expect.poll(() => child.evaluate('window.autoplayEvents')).toBeGreaterThan(starts);
+          await expect.poll(() => child.evaluate('autoplayAudio.currentTime')).toBeGreaterThan(0);
+          expect(await child.evaluate('window.explicitPlayCalls')).toBe(0);
+          expect(await child.evaluate('autoplayAudio.paused')).toBe(false);
+          expect(await child.evaluate('autoplayAudio.isConnected')).toBe(false);
+          await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+          await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'false');
+          await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+          await expect(page.frameLocator('iframe').locator('body')).toHaveAttribute(
+            'data-autoplay-playing',
+            'false',
+          );
+          await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
+        }
+      });
+    }
 
     for (const media of ['audio', 'video', 'detached', 'context']) {
       test(`${media} pauses narration; resuming narration pauses frame media`, async ({ page }) => {

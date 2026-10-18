@@ -62,6 +62,7 @@ it.each(['bytes', 'fetch', 'play'])(
     vi.stubGlobal('fetch', fetch);
     if (stage === 'play') Media.pending = playing.promise;
     const player = new AudioPlayer();
+    const onSpeechStart = vi.fn();
     const engine = new PlaybackEngine(
       [
         {
@@ -80,6 +81,7 @@ it.each(['bytes', 'fetch', 'play'])(
       ] as unknown as Scene[],
       { clearEffects: vi.fn() } as unknown as ActionEngine,
       player,
+      { onSpeechStart },
     );
     engine.start();
     await vi.waitFor(() => {
@@ -104,6 +106,10 @@ it.each(['bytes', 'fetch', 'play'])(
     await vi.waitFor(() => expect(player.isPlaying()).toBe(true));
     expect(bytes).toHaveBeenLastCalledWith('first');
     expect(engine.getSnapshot().actionIndex).toBe(1);
+    expect(onSpeechStart.mock.calls).toEqual([
+      ['First line', 0],
+      ['First line', 0],
+    ]);
     engine.stop();
   },
 );

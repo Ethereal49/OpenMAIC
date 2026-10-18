@@ -248,7 +248,7 @@ describe('action resume storage', () => {
     await flushPromises();
 
     expect(onSpeechStart).toHaveBeenCalledTimes(1);
-    expect(onSpeechStart).toHaveBeenCalledWith('c');
+    expect(onSpeechStart).toHaveBeenCalledWith('c', 2);
   });
 });
 
@@ -287,8 +287,11 @@ describe('PlaybackEngine action navigation', () => {
     await flushPromises();
 
     expect(jumped.executions).toEqual(natural.executions);
-    expect(onEffectFire.mock.calls.map(([effect]) => effect.kind)).toEqual(['spotlight', 'laser']);
-    expect(onSpeechStart.mock.calls).toEqual([['target']]);
+    expect(onEffectFire.mock.calls.map(([effect, index]) => [effect.kind, index])).toEqual([
+      ['spotlight', 1],
+      ['laser', 2],
+    ]);
+    expect(onSpeechStart.mock.calls).toEqual([['target', 3]]);
     expect(onProgress.mock.calls.every(([snapshot]) => snapshot.actionIndex === 3)).toBe(true);
     engine.stop();
     naturalEngine.stop();
@@ -348,7 +351,7 @@ describe('PlaybackEngine action navigation', () => {
       else engine.continuePlayback();
       await flushPromises();
       expect(executions.map(({ action }) => action.id)).toEqual(['spot']);
-      expect(onSpeechStart.mock.calls).toEqual([['target']]);
+      expect(onSpeechStart.mock.calls).toEqual([['target', 2]]);
       expect(onProgress.mock.calls.every(([snapshot]) => snapshot.actionIndex === 2)).toBe(true);
       engine.pause();
       engine.resume();
@@ -434,7 +437,7 @@ describe('PlaybackEngine action navigation', () => {
     reconstruction.resolve();
     expect(await staleJump).toBe(false);
     expect(executions).toEqual([]);
-    expect(onSpeechStart.mock.calls).toEqual([['first']]);
+    expect(onSpeechStart.mock.calls).toEqual([['first', 0]]);
     engine.stop();
   });
 
@@ -550,11 +553,14 @@ describe('PlaybackEngine action navigation', () => {
     await vi.advanceTimersByTimeAsync(2500);
     await flushPromises();
 
-    expect(onEffectFire).toHaveBeenCalledWith({
-      kind: 'spotlight',
-      targetId: 'box',
-      dimOpacity: undefined,
-    });
+    expect(onEffectFire).toHaveBeenCalledWith(
+      {
+        kind: 'spotlight',
+        targetId: 'box',
+        dimOpacity: undefined,
+      },
+      1,
+    );
   });
 
   it('jumping while paused positions the cursor without autoplay', async () => {

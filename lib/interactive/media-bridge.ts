@@ -96,18 +96,26 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
   function untrackedPlay(event) {
     if (!media.has(event.target)) started(event);
   }
+  function observe(element) {
+    // Element-owned listeners survive reuse without retaining idle media globally.
+    if (element instanceof HTMLMediaElement) element.addEventListener('play', untrackedPlay);
+    return element;
+  }
+  ['createElement', 'createElementNS'].forEach(function (name) {
+    var native = Document.prototype[name];
+    Document.prototype[name] = new Proxy(native, {
+      apply: function (target, receiver, args) {
+        return observe(Reflect.apply(target, receiver, args));
+      }
+    });
+  });
   var Audio = window.Audio;
   if (Audio) window.Audio = new Proxy(Audio, {
     apply: function (target, receiver, args) {
-      var element = Reflect.apply(target, receiver, args);
-      element.addEventListener('play', untrackedPlay);
-      return element;
+      return observe(Reflect.apply(target, receiver, args));
     },
     construct: function (target, args, newTarget) {
-      var element = Reflect.construct(target, args, newTarget);
-      // Keep the observer on the element, without retaining idle elements globally.
-      element.addEventListener('play', untrackedPlay);
-      return element;
+      return observe(Reflect.construct(target, args, newTarget));
     }
   });
   var play = HTMLMediaElement.prototype.play;

@@ -91,6 +91,16 @@ function bridgeFixture() {
     return Object.assign(Reflect.construct(Media, [], new.target || NativeAudio), { src });
   }
   NativeAudio.prototype = Media.prototype;
+  class FrameDocument extends EventTarget {
+    createElement(name: string, _options?: unknown): EventTarget {
+      return ['audio', 'video'].includes(name.toLowerCase()) ? new Media() : new EventTarget();
+    }
+    createElementNS(namespace: string, name: string, _options?: unknown): EventTarget {
+      return namespace === 'http://www.w3.org/1999/xhtml'
+        ? this.createElement(name)
+        : new EventTarget();
+    }
+  }
   type AudioFactory = { (src?: string): Media; new (src?: string): Media; prototype: Media };
   const frameWindow = new EventTarget() as EventTarget & {
     parent: { postMessage: ReturnType<typeof vi.fn> };
@@ -98,12 +108,13 @@ function bridgeFixture() {
   frameWindow.parent = { postMessage: vi.fn() };
   Object.assign(frameWindow, { AudioContext: Context, Audio: NativeAudio });
   const script = mediaBridgeScript('test').replace(/^<script[^>]*>|<\/script>$/g, '');
-  const frameDocument = new EventTarget();
+  const frameDocument = new FrameDocument();
   const nativePlay = vi.spyOn(frameDocument, 'addEventListener');
   runInNewContext(script, {
     window: frameWindow,
     document: frameDocument,
     HTMLMediaElement: Media,
+    Document: FrameDocument,
     Set: TrackedSet,
   });
   const control = (payload: Record<string, unknown>) =>
@@ -116,6 +127,7 @@ function bridgeFixture() {
   control({ action: 'sync', enabled: true });
   return {
     Media,
+    frameDocument,
     Audio: (frameWindow as unknown as { Audio: AudioFactory }).Audio,
     Context: (frameWindow as unknown as { AudioContext: typeof Context }).AudioContext,
     contextSet: sets[1],
@@ -136,6 +148,49 @@ function bridgeFixture() {
 }
 
 describe('injected media lifetime', () => {
+  it.each(
+    ['audio', 'video'].flatMap((tag) =>
+      ['createElement', 'createElementNS'].map((method) => [tag, method]),
+    ),
+  )('observes detached DOM autoplay for %s via %s', async (tag, method) => {
+    const { frameDocument, media, control, frameWindow, Media: _Media } = bridgeFixture();
+    const create = () =>
+      (method === 'createElement'
+        ? frameDocument.createElement(tag, { is: 'custom-media' })
+        : frameDocument.createElementNS('http://www.w3.org/1999/xhtml', tag)) as InstanceType<
+        typeof _Media
+      >;
+    for (let i = 0; i < 100; i++) create();
+    expect(media.size).toBe(0);
+    const element = create();
+    for (let i = 0; i < 2; i++) {
+      frameWindow.parent.postMessage.mockClear();
+      element.paused = false;
+      element.dispatchEvent(new Event('play'));
+      expect(media.size).toBe(1);
+      expect(
+        frameWindow.parent.postMessage.mock.calls.filter(([data]) => data.playing),
+      ).toHaveLength(1);
+      expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ playing: true }),
+        '*',
+      );
+      control({ action: 'pause', requestId: i + 1 });
+      await Promise.resolve();
+      expect(element.paused).toBe(true);
+      expect(media.size).toBe(0);
+      expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ requestId: i + 1, playing: false }),
+        '*',
+      );
+    }
+    frameWindow.parent.postMessage.mockClear();
+    await element.play();
+    expect(frameWindow.parent.postMessage.mock.calls.filter(([data]) => data.playing)).toHaveLength(
+      1,
+    );
+    element.pause();
+  });
   it.each(['call', 'construct'] as const)(
     'observes detached native autoplay via Audio %s without retaining idle elements',
     async (creation) => {
