@@ -1,5 +1,6 @@
 import { mediaBridgeScript } from '@/lib/interactive/media-bridge';
 import { injectIntoDocumentHead } from './html-document';
+import { parse, type DefaultTreeAdapterTypes } from 'parse5';
 import {
   withObservationResponder,
   type ObservationIdentity,
@@ -388,6 +389,35 @@ const ELEMENT_PICKER_SHIM = `<script data-iframe-element-picker-shim>
  * Omitted by consumers that produce standalone documents (video export), where
  * no parent ever asks and the bytes count against an export size cap.
  */
+function patchNestedMedia(html: string, documentId: string): string {
+  const patches: Array<{ start: number; end: number; replacement: string }> = [];
+  let childIndex = 0;
+  const visit = (node: DefaultTreeAdapterTypes.Node) => {
+    if ('tagName' in node && node.tagName === 'iframe') {
+      const srcdoc = node.attrs.find((attr) => attr.name === 'srcdoc');
+      const range = node.sourceCodeLocation?.attrs?.srcdoc;
+      if (srcdoc && range) {
+        const childId = `${documentId.slice(0, 100)}_${++childIndex}`;
+        const child = injectIntoDocumentHead(
+          patchNestedMedia(srcdoc.value, childId),
+          mediaBridgeScript(childId),
+        );
+        patches.push({
+          start: range.startOffset,
+          end: range.endOffset,
+          replacement: `srcdoc="${child.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}"`,
+        });
+      }
+    }
+    if ('childNodes' in node) node.childNodes.forEach(visit);
+    if ('content' in node) visit(node.content);
+  };
+  visit(parse(html, { sourceCodeLocationInfo: true }));
+  for (const patch of patches.sort((a, b) => b.start - a.start))
+    html = html.slice(0, patch.start) + patch.replacement + html.slice(patch.end);
+  return html;
+}
+
 export function patchHtmlForIframe(
   html: string,
   observation?: ObservationIdentity,
@@ -419,7 +449,10 @@ export function patchHtmlForIframe(
     '\n' +
     iframeCss;
 
-  const patched = injectIntoDocumentHead(html, injection);
+  const patched = injectIntoDocumentHead(
+    mediaId ? patchNestedMedia(html, mediaId) : html,
+    injection,
+  );
   // Body end, not head: the reader captures the scope element as it installs.
   return observation ? withObservationResponder(patched, observation) : patched;
 }

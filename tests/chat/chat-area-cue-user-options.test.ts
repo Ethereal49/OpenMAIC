@@ -12,6 +12,7 @@ import type { Scene } from '@/lib/types/stage';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
+import { shouldAutoResumeLecture } from '@/lib/playback/auto-resume';
 
 const fixture = vi.hoisted(() => ({
   state: {
@@ -43,6 +44,90 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.useRealTimers();
+});
+
+it('resumes the retained lecture buffer after a prepaused lecture returns from Q&A', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  vi.useFakeTimers();
+  fixture.state.chats = [];
+  const root = createRoot(document.createElement('div'));
+  const ref = createRef<ChatAreaRef>();
+  const engine = new PlaybackEngine(
+    [{ id: 'scene', actions: [{ id: 'line', type: 'speech', text: 'First line' }] }] as Scene[],
+    { clearEffects() {} } as unknown as ActionEngine,
+    {
+      play: async () => true,
+      stop() {},
+      pause() {},
+      onEnded() {},
+      isPlaying: () => false,
+      hasActiveAudio: () => false,
+    } as unknown as AudioPlayer,
+  );
+  try {
+    await act(async () => root.render(createElement(ChatArea, { ref })));
+    let sessionId = '';
+    await act(async () => {
+      sessionId = await ref.current!.startLecture('scene');
+    });
+    engine.start();
+    engine.pause();
+    await act(async () => {
+      ref.current!.addLectureMessage(
+        sessionId,
+        { id: 'line', type: 'speech', text: 'First line' },
+        0,
+      );
+    });
+    ref.current!.pauseBuffer(sessionId);
+    engine.handleUserInterrupt('A question');
+    const file = ts.createSourceFile(
+      'owner.tsx',
+      readFileSync('components/edit/PlaybackChromeRoot.tsx', 'utf8'),
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TSX,
+    );
+    let callback = '';
+    const visit = (node: ts.Node) => {
+      if (
+        ts.isVariableDeclaration(node) &&
+        node.name.getText(file) === 'handleSessionStop' &&
+        node.initializer &&
+        ts.isCallExpression(node.initializer)
+      )
+        callback = node.initializer.arguments[0].getText(file);
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+    expect(callback).not.toBe('');
+    const handleStop = runInNewContext(
+      ts.transpileModule('(' + callback + ')', {
+        compilerOptions: { target: ts.ScriptTarget.ES2022 },
+      }).outputText,
+      {
+        engineRef: { current: engine },
+        doSessionCleanup: () => engine.handleEndDiscussion(),
+        shouldAutoResumeLecture,
+        playbackCompleted: false,
+        chatAreaRef: ref,
+        lectureSessionIdRef: { current: sessionId },
+      },
+    ) as (payload: { source: string; endReason: string }) => Promise<void>;
+    await act(async () => {
+      await handleStop({ source: 'soft_close_timeout', endReason: 'user_done' });
+      await vi.advanceTimersByTimeAsync(6000);
+    });
+    expect(
+      fixture.state.chats
+        .find((s) => s.id === sessionId)
+        ?.messages[0].parts.filter((part) => part.type === 'text')
+        .map((part) => part.text),
+    ).toEqual(['First line']);
+  } finally {
+    engine.stop();
+    act(() => root.unmount());
+  }
 });
 
 it('persists a pending lecture sentence once when the real player retries it', async () => {

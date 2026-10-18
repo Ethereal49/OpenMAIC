@@ -37,6 +37,7 @@ const mocks = vi.hoisted(() => ({
   discussionOptions: undefined as { onPlaybackBlocked?: () => void } | undefined,
   resumeActiveLiveBuffer: vi.fn(),
   sendFrameMessage: vi.fn(),
+  hiddenFrameMessage: vi.fn(),
   engineStart: vi.fn(),
   engineContinuePlayback: vi.fn(),
   handleUserInterrupt: vi.fn(),
@@ -376,7 +377,10 @@ vi.mock('@/lib/store/widget-iframe', () => ({
   useWidgetIframeStore: {
     getState: () => ({
       getSendMessage: () => undefined,
-      sendMessageByScene: { 'scene-1': mocks.sendFrameMessage },
+      sendMessageByScene: {
+        'scene-1': mocks.sendFrameMessage,
+        hidden: mocks.hiddenFrameMessage,
+      },
     }),
   },
 }));
@@ -426,6 +430,7 @@ describe('PlaybackChromeRoot element-reference ownership', () => {
     mocks.resumeActiveLiveBuffer.mockReset();
     mocks.discussionOptions = undefined;
     mocks.sendFrameMessage.mockReset();
+    mocks.hiddenFrameMessage.mockReset();
     mocks.engineStart.mockReset();
     mocks.engineContinuePlayback.mockReset();
     mocks.handleUserInterrupt.mockReset();
@@ -761,6 +766,22 @@ describe('PlaybackChromeRoot element-reference ownership', () => {
     expect(mocks.enginePause).toHaveBeenCalledOnce();
     expect(mocks.pauseActiveLiveBuffer).toHaveBeenCalledOnce();
     expect(mocks.discussionPause).toHaveBeenCalledOnce();
+  });
+
+  it('waits for hidden pooled media before allowing destination narration', async () => {
+    let finish!: (silent: boolean) => void;
+    mocks.hiddenFrameMessage.mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
+    await renderOwner();
+    let settled = false;
+    const guard = mocks.engineOptions!.beforeSpeech!().then((silent) => {
+      settled = true;
+      return silent;
+    });
+    await Promise.resolve();
+    expect(mocks.hiddenFrameMessage).toHaveBeenCalledWith('maic:media:control:v1', {});
+    expect(settled).toBe(false);
+    finish(false);
+    expect(await guard).toBe(false);
   });
 
   it('keeps the engine live while pausing and resuming discussion media', async () => {

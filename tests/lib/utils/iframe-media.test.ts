@@ -41,8 +41,8 @@ const playing = { type: 'maic:media:state:v1', documentId: 'current', requestId:
 function bridgeFixture() {
   const sets: Set<unknown>[] = [];
   class TrackedSet extends Set<unknown> {
-    constructor() {
-      super();
+    constructor(values?: Iterable<unknown>) {
+      super(values);
       sets.push(this);
     }
   }
@@ -92,6 +92,15 @@ function bridgeFixture() {
   }
   NativeAudio.prototype = Media.prototype;
   class FrameDocument extends EventTarget {
+    frames: Array<{
+      contentWindow: object;
+      getAttribute: (name: string) => string | null;
+      addEventListener: ReturnType<typeof vi.fn>;
+      removeEventListener: ReturnType<typeof vi.fn>;
+    }> = [];
+    querySelectorAll() {
+      return this.frames;
+    }
     createElement(name: string, _options?: unknown): EventTarget {
       return ['audio', 'video'].includes(name.toLowerCase()) ? new Media() : new EventTarget();
     }
@@ -116,6 +125,8 @@ function bridgeFixture() {
     HTMLMediaElement: Media,
     Document: FrameDocument,
     Set: TrackedSet,
+    setTimeout,
+    clearTimeout,
   });
   const control = (payload: Record<string, unknown>) =>
     frameWindow.dispatchEvent(
@@ -148,6 +159,94 @@ function bridgeFixture() {
 }
 
 describe('injected media lifetime', () => {
+  it('aggregates nested media only from its registered source, document and generation', async () => {
+    vi.useFakeTimers();
+    const { frameWindow, frameDocument, control } = bridgeFixture();
+    const postMessage = vi.fn();
+    const source = { postMessage };
+    frameDocument.frames.push({
+      contentWindow: source,
+      getAttribute: (name) =>
+        name === 'srcdoc' ? '<script data-maic-media-document="child">' : null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    const message = (data: Record<string, unknown>, from = source) =>
+      frameWindow.dispatchEvent(
+        new MessageEvent('message', {
+          source: from as unknown as Window,
+          data: {
+            type: 'maic:media:state:v1',
+            documentId: 'child',
+            generation: postMessage.mock.calls.at(-1)?.[0].generation ?? 0,
+            requestId: 0,
+            playing: true,
+            ...data,
+          },
+        }),
+      );
+    message({ generation: 0 });
+    frameWindow.parent.postMessage.mockClear();
+    message({}, { postMessage: vi.fn() });
+    message({ documentId: 'old' });
+    message({ generation: -1 });
+    expect(frameWindow.parent.postMessage.mock.calls.some(([data]) => data.playing)).toBe(false);
+    message({});
+    expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ playing: true }),
+      '*',
+    );
+    control({ action: 'pause', requestId: 44 });
+    const pause = postMessage.mock.calls.findLast(([data]) => data.action === 'pause')?.[0];
+    expect(pause).toBeDefined();
+    message({ requestId: pause.requestId + 1, playing: false });
+    expect(frameWindow.parent.postMessage.mock.calls.some(([data]) => data.requestId === 44)).toBe(
+      false,
+    );
+    message({ requestId: pause.requestId, playing: false });
+    await vi.waitFor(() =>
+      expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ requestId: 44, playing: false }),
+        '*',
+      ),
+    );
+    control({ action: 'pause', requestId: 45 });
+    const secondPause = postMessage.mock.calls.findLast(([data]) => data.action === 'pause')![0];
+    message({ playing: true });
+    expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ requestId: 0, playing: true }),
+      '*',
+    );
+    message({ requestId: secondPause.requestId, playing: true });
+    await vi.waitFor(() =>
+      expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ requestId: 45, playing: true }),
+        '*',
+      ),
+    );
+    control({ action: 'pause', requestId: 46 });
+    await vi.advanceTimersByTimeAsync(1001);
+    expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ requestId: 46, playing: true }),
+      '*',
+    );
+  });
+
+  it('injects nested srcdoc bridges recursively without changing outer authored bytes', () => {
+    const escape = (html: string) => html.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+    const leaf = '<button onclick="window.text=\'a&b\'">Nested</button>';
+    const html = `<p data-keep='exact'>Before</p><iframe sandbox="allow-scripts" srcdoc="${escape(`<iframe srcdoc="${escape(leaf)}"></iframe>`)}"></iframe>`;
+    const patched = patchHtmlForIframe(html, undefined, 'root');
+    expect(patched).toContain("<p data-keep='exact'>Before</p>");
+    let nested = new DOMParser().parseFromString(patched, 'text/html').querySelector('iframe')!;
+    expect(nested.getAttribute('sandbox')).toBe('allow-scripts');
+    const child = nested.getAttribute('srcdoc')!;
+    expect(mediaDocumentId(child)).toBeTruthy();
+    nested = new DOMParser().parseFromString(child, 'text/html').querySelector('iframe')!;
+    const grandchild = nested.getAttribute('srcdoc')!;
+    expect(mediaDocumentId(grandchild)).toBeTruthy();
+    expect(grandchild).toContain(leaf);
+  });
   it.each(
     ['audio', 'video'].flatMap((tag) =>
       ['createElement', 'createElementNS'].map((method) => [tag, method]),

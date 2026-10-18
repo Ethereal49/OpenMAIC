@@ -277,11 +277,13 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
     const [audioAgentId, setAudioAgentId] = useState<string | null>(null);
 
     const pauseInteractiveMedia = useCallback(async () => {
-      const result = await useWidgetIframeStore
-        .getState()
-        .sendMessageByScene[currentSceneId ?? '']?.(MEDIA_CONTROL, {});
-      return result !== false;
-    }, [currentSceneId]);
+      const results = await Promise.all(
+        Object.values(useWidgetIframeStore.getState().sendMessageByScene).map((send) =>
+          send(MEDIA_CONTROL, {}),
+        ),
+      );
+      return results.every((silent) => silent !== false);
+    }, []);
     const discussionTTS = useDiscussionTTS({
       beforePlayback: pauseInteractiveMedia,
       onPlaybackBlocked: () => {
@@ -575,6 +577,7 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
           return;
         }
         lectureSessionIdRef.current = sessionId;
+        chatAreaRef.current.resumeBuffer(sessionId);
         engine.continuePlayback();
       },
       [doSessionCleanup, playbackCompleted],

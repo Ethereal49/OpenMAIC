@@ -12,15 +12,57 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
   var contextState = new WeakMap();
   var enabled = true;
   var generation = 0;
-  function report(requestId) {
+  var children = new Map();
+  var childGeneration = 0;
+  var childRequest = 0;
+  function syncChild(child) {
+    child.frame.contentWindow.postMessage({ type: 'maic:media:control:v1', documentId: child.id, generation: child.generation, action: 'sync', enabled: enabled }, '*');
+    if (child.pending) child.frame.contentWindow.postMessage({ type: 'maic:media:control:v1', documentId: child.id, generation: child.generation, action: 'pause', requestId: child.pending.id }, '*');
+  }
+  function scanChildren() {
+    var frames = new Set(document.querySelectorAll('iframe[srcdoc]'));
+    children.forEach(function (child, frame) {
+      var match = (frame.getAttribute('srcdoc') || '').match(/<script data-maic-media-document="([a-zA-Z0-9_-]+)">/);
+      if (!frames.has(frame) || !match || match[1] !== child.id) {
+        frame.removeEventListener('load', child.load);
+        children.delete(frame);
+        if (child.pending) child.pending.finish(true);
+      }
+    });
+    frames.forEach(function (frame) {
+      if (children.has(frame) || !frame.contentWindow) return;
+      var match = (frame.getAttribute('srcdoc') || '').match(/<script data-maic-media-document="([a-zA-Z0-9_-]+)">/);
+      if (!match) return;
+      var child = { frame: frame, id: match[1], generation: ++childGeneration, playing: false, pending: null };
+      child.load = function () { child.generation = ++childGeneration; child.playing = false; syncChild(child); };
+      children.set(frame, child);
+      frame.addEventListener('load', child.load);
+      syncChild(child);
+    });
+  }
+  function pauseChild(child) {
+    if (child.pending) return child.pending.promise;
+    var id = ++childRequest;
+    var pending = { id: id };
+    pending.promise = new Promise(function (resolve) {
+      var timer = setTimeout(function () { pending.finish(!child.playing); }, 1000);
+      pending.finish = function (silent) { clearTimeout(timer); child.pending = null; resolve(silent); };
+    });
+    child.pending = pending;
+    syncChild(child);
+    return pending.promise;
+  }
+  function report(requestId, unsilenced) {
     suspended.forEach(function (ref) { if (!ref.deref()) suspended.delete(ref); });
     window.parent.postMessage({
       type: 'maic:media:state:v1', documentId: documentId, generation: generation, requestId: requestId || 0,
-      playing: Array.from(media).some(function (element) { return !element.paused && !element.ended; }) ||
-        Array.from(contexts).some(function (context) { return context.state === 'running'; })
+      playing: !!unsilenced || Array.from(media).some(function (element) { return !element.paused && !element.ended; }) ||
+        Array.from(contexts).some(function (context) { return context.state === 'running'; }) ||
+        Array.from(children.values()).some(function (child) { return child.playing; })
     }, '*');
   }
   function pause() {
+    scanChildren();
     media.forEach(function (element) { element.pause(); });
     return Promise.all(Array.from(contexts).map(function (context) {
       if (context.state !== 'running') return Promise.resolve();
@@ -39,7 +81,7 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
         }
       });
       return state.pending;
-    }));
+    }).concat(Array.from(children.values()).map(pauseChild)));
   }
   function forget(context) {
     var state = contextState.get(context);
@@ -151,15 +193,35 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
     });
   });
   window.addEventListener('message', function (event) {
-    if (event.source !== window.parent) return;
     var data = event.data;
+    if (event.source !== window.parent) {
+      scanChildren();
+      children.forEach(function (child) {
+        if (event.source !== child.frame.contentWindow || !data || data.type !== 'maic:media:state:v1' || data.documentId !== child.id || typeof data.playing !== 'boolean' || !Number.isSafeInteger(data.requestId) || data.requestId < 0) return;
+        if (data.generation === 0 && data.requestId === 0) { syncChild(child); return; }
+        if (data.generation !== child.generation) return;
+        if (child.pending) {
+          if (data.requestId !== child.pending.id) {
+            if (data.requestId === 0 && data.playing) { child.playing = true; report(); }
+            return;
+          }
+          child.pending.finish(!data.playing);
+        } else if (data.requestId !== 0) return;
+        child.playing = data.playing;
+        if (!enabled && child.playing) pause();
+        report();
+      });
+      return;
+    }
     if (!data || data.type !== 'maic:media:control:v1' || data.documentId !== documentId) return;
     if (data.action === 'pause' && data.generation === generation && Number.isSafeInteger(data.requestId) && data.requestId > 0) {
-      pause().then(function () { report(data.requestId); });
+      pause().then(function (results) { report(data.requestId, results.some(function (silent) { return silent === false; })); });
     }
     else if (data.action === 'sync' && typeof data.enabled === 'boolean' && Number.isSafeInteger(data.generation) && data.generation > 0) {
       generation = data.generation;
       enabled = data.enabled;
+      scanChildren();
+      children.forEach(syncChild);
       if (!enabled) suspended.forEach(function (ref) {
         var context = ref.deref();
         if (context) contextState.get(context).resumeRequested = false;
@@ -168,6 +230,8 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
       changed();
     }
   });
+  if (typeof MutationObserver !== 'undefined') new MutationObserver(scanChildren).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ['srcdoc'] });
+  scanChildren();
   report();
 })(__DOCUMENT_ID__);`;
 
