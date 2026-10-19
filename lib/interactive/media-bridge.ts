@@ -330,6 +330,17 @@ const MEDIA_BRIDGE = String.raw`(function (documentId, unobservable) {
       changed();
     }
   }
+  ['write', 'writeln'].forEach(function (name) {
+    var native = Document.prototype[name];
+    if (native) Document.prototype[name] = new Proxy(native, {
+      apply: function (target, receiver, args) {
+        var result = Reflect.apply(target, receiver, args);
+        // Streaming writes can finish tags begun by other writes or the main parser.
+        if (!unobservable) { unobservable = true; changed(); }
+        return result;
+      }
+    });
+  });
   [typeof Element === 'undefined' ? {} : Element.prototype,
     typeof ShadowRoot === 'undefined' ? {} : ShadowRoot.prototype
   ].forEach(function (prototype) {

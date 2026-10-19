@@ -255,6 +255,17 @@ function bridgeFixture(unobservable = false, documentId = 'test', globals = {}) 
     }
   }
   class FrameDocument extends FrameNode {
+    written: string[] = [];
+    write(...input: unknown[]) {
+      const html = input.map(String).join('');
+      if (html === 'invalid') throw new TypeError('invalid HTML');
+      this.written.push(html);
+    }
+    writeln(...input: unknown[]) {
+      const html = input.map(String).join('');
+      if (html === 'invalid') throw new TypeError('invalid HTML');
+      this.written.push(html + '\n');
+    }
     static parseHTML(html: unknown) {
       if (String(html) === 'invalid') throw new TypeError('invalid HTML');
       const root = new FrameElement();
@@ -563,6 +574,54 @@ describe('injected media lifetime', () => {
       await Promise.resolve();
       expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
         expect.objectContaining({ requestId: 93, playing: true }),
+        '*',
+      );
+    },
+  );
+  it.each(['write', 'writeln'] as const)(
+    'refuses silence after streaming %s without coercing its input again',
+    async (method) => {
+      const { frameDocument, control, frameWindow } = bridgeFixture();
+      const toString = vi.fn(() => '<div><tem');
+      expect(frameDocument[method]({ toString })).toBeUndefined();
+      expect(
+        frameDocument[method]('plate shadowrootmode="closed"></template></div>'),
+      ).toBeUndefined();
+      expect(toString).toHaveBeenCalledTimes(1);
+      expect(frameDocument.written).toEqual([
+        '<div><tem' + (method === 'writeln' ? '\n' : ''),
+        'plate shadowrootmode="closed"></template></div>' + (method === 'writeln' ? '\n' : ''),
+      ]);
+      control({ action: 'pause', requestId: 94 });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ requestId: 94, playing: true }),
+        '*',
+      );
+    },
+  );
+  it.each(['write', 'writeln'] as const)('preserves native %s failures', async (method) => {
+    const { frameDocument, control, frameWindow } = bridgeFixture();
+    expect(() => frameDocument[method]('invalid')).toThrow('invalid HTML');
+    control({ action: 'pause', requestId: 95 });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ requestId: 95, playing: false }),
+      '*',
+    );
+  });
+  it.each(['write', 'writeln'] as const)(
+    'conservatively refuses silence for plain %s chunks too',
+    async (method) => {
+      const { frameDocument, control, frameWindow } = bridgeFixture();
+      frameDocument[method]('Ordinary text could finish markup in the parser stream');
+      control({ action: 'pause', requestId: 96 });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ requestId: 96, playing: true }),
         '*',
       );
     },
