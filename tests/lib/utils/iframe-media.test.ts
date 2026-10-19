@@ -1029,6 +1029,54 @@ describe('injected media lifetime', () => {
       '*',
     );
   });
+  it('does not turn failed nested pause acknowledgements into retry loops', async () => {
+    vi.useFakeTimers();
+    const { frameWindow, frameDocument, control } = bridgeFixture();
+    const postMessage = vi.fn();
+    const source = { postMessage };
+    frameDocument.frames.push({
+      contentWindow: source,
+      getAttribute: (name) =>
+        name === 'srcdoc' ? '<script data-maic-media-document="child">' : null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    const requests = () => postMessage.mock.calls.filter(([data]) => data.action === 'pause');
+    const state = (playing: boolean, requestId = 0) =>
+      frameWindow.dispatchEvent(
+        new MessageEvent('message', {
+          source: source as unknown as Window,
+          data: {
+            type: 'maic:media:state:v1',
+            documentId: 'child',
+            generation: postMessage.mock.calls.at(-1)![0].generation,
+            requestId,
+            playing,
+          },
+        }),
+      );
+    control({ action: 'sync', enabled: false });
+    expect(requests()).toHaveLength(1);
+    state(true, requests().at(-1)![0].requestId);
+    expect(requests()).toHaveLength(1);
+    state(true);
+    expect(requests()).toHaveLength(1);
+    state(false);
+    state(true);
+    expect(requests()).toHaveLength(2);
+    state(true, requests().at(-1)![0].requestId);
+    expect(requests()).toHaveLength(2);
+    control({ action: 'pause', requestId: 97 });
+    expect(requests()).toHaveLength(3);
+    state(true, requests().at(-1)![0].requestId);
+    await vi.waitFor(() =>
+      expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ requestId: 97, playing: true }),
+        '*',
+      ),
+    );
+    expect(requests()).toHaveLength(3);
+  });
 
   it('patches deeply nested ordinary HTML without consuming the JavaScript call stack', () => {
     const html = '<div>'.repeat(8000) + 'deep leaf' + '</div>'.repeat(8000);
@@ -1612,6 +1660,39 @@ describe('interactive media boundary', () => {
     message(playing);
     expect(played).toHaveBeenCalledOnce();
   });
+  it.each(['reported', 'explicit'] as const)(
+    'does not retry a hidden unsilenced acknowledgement (%s)',
+    async (start) => {
+      const { session, message, post, played } = fixture();
+      const requests = () => post.mock.calls.filter(([data]) => data.action === 'pause');
+      session.sync(false);
+      const initial = start === 'explicit' ? session.pause() : undefined;
+      if (start === 'reported') message(playing);
+      expect(requests()).toHaveLength(1);
+      message({ ...playing, requestId: requests().at(-1)![0].requestId });
+      if (initial) await expect(initial).resolves.toBe(false);
+      expect(requests()).toHaveLength(1);
+      message(playing);
+      expect(requests()).toHaveLength(1);
+      message({ ...playing, playing: false });
+      message(playing);
+      expect(requests()).toHaveLength(2);
+      message({ ...playing, requestId: requests().at(-1)![0].requestId });
+      expect(requests()).toHaveLength(2);
+      const retry = session.pause();
+      expect(requests()).toHaveLength(3);
+      message({ ...playing, requestId: requests().at(-1)![0].requestId });
+      await expect(retry).resolves.toBe(false);
+      expect(requests()).toHaveLength(3);
+      const loaded = session.loaded(false);
+      message(playing);
+      await expect(loaded).resolves.toBe(true);
+      expect(requests()).toHaveLength(4);
+      message({ ...playing, requestId: requests().at(-1)![0].requestId });
+      expect(requests()).toHaveLength(4);
+      expect(played).not.toHaveBeenCalled();
+    },
+  );
 
   it('reissues a pending pause when a caller retries after the frame becomes responsive', async () => {
     vi.useFakeTimers();

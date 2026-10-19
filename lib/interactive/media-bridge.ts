@@ -487,8 +487,9 @@ const MEDIA_BRIDGE = String.raw`(function (documentId, unobservable) {
           }
           child.pending.finish(!data.playing);
         } else if (data.requestId !== 0) return;
+        var wasPlaying = child.playing;
         child.playing = data.playing;
-        if (!enabled && child.playing) pause();
+        if (!enabled && data.requestId === 0 && child.playing && !wasPlaying) pause();
         report();
       });
       return;
@@ -536,6 +537,7 @@ export function createInteractiveMediaSession(
   onPlay: () => void,
 ) {
   let enabled = true;
+  let reportedPlaying = false;
   let disposed = false;
   let generation = ++nextMediaGeneration;
   let hasLoaded = false;
@@ -606,9 +608,12 @@ export function createInteractiveMediaSession(
       }
       pendingPause.finish(!data.playing);
     } else if (data.requestId !== 0) return;
+    const started = data.playing && !reportedPlaying;
+    reportedPlaying = data.playing;
     if (data.playing) {
       if (enabled) onPlay();
-      else pause();
+      // A failed acknowledgement is a result, not a new play transition.
+      else if (data.requestId === 0 && started) void pause();
     }
   };
   window.addEventListener('message', onMessage);
@@ -624,6 +629,7 @@ export function createInteractiveMediaSession(
       if (disposed) return Promise.resolve(false);
       settleLoad(false);
       generation = ++nextMediaGeneration;
+      reportedPlaying = false;
       const restored = restoring;
       restoring = false;
       const source = frame.getAttribute('srcdoc');

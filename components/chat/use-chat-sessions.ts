@@ -2140,7 +2140,7 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
     const active = sessionsRef.current.find(isOpenLiveSession);
     const pending = pendingLiveStartsRef.current > 0 || streamingSessionIdRef.current !== null;
     if (active || includePendingSession || pending) livePausedRef.current = true;
-    if (!active) return pending;
+    if (!active) return includePendingSession || pending;
     const buf = buffersRef.current.get(active.id);
     if (buf && !buf.disposed) buf.pause();
     log.info('[ChatArea] Buffer-paused discussion:', active.id);

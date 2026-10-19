@@ -2,6 +2,9 @@
 import { act, createElement, useLayoutEffect } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
+import ts from 'typescript';
 import { useChatSessions } from '@/components/chat/use-chat-sessions';
 import { StreamBuffer } from '@/lib/buffer/stream-buffer';
 import { ActionEngine } from '@/lib/action/engine';
@@ -92,9 +95,9 @@ it.each(['discussion', 'qa'] as const)(
     });
     expect(mocks.capabilities).toHaveBeenCalled();
     expect(chat.sessions).toHaveLength(0);
+    let handled = false;
     act(() => {
-      // Pending QA admission is a tracked pause target before its session is published.
-      expect(chat.pauseActiveLiveBuffer(true)).toBe(type === 'qa');
+      handled = chat.pauseActiveLiveBuffer(true);
     });
     await act(async () => {
       release({});
@@ -113,8 +116,88 @@ it.each(['discussion', 'qa'] as const)(
     });
     expect(speech.mock.calls.some(([text]) => text === 'Later speech.')).toBe(true);
     expect(ActionEngine.prototype.execute).toHaveBeenCalledOnce();
+    expect(handled).toBe(true);
   },
 );
+
+it('exposes the real composer pause and resume path before discussion admission completes', async () => {
+  let release!: (value: object) => void;
+  mocks.capabilities.mockReturnValue(
+    new Promise((resolve) => {
+      release = resolve;
+    }),
+  );
+  await act(async () => {
+    pending = chat.startDiscussion({ topic: 'Proactive join' });
+  });
+  expect(chat.sessions).toHaveLength(0);
+  expect(buffers).toHaveLength(0);
+  const file = ts.createSourceFile(
+    'PlaybackChromeRoot.tsx',
+    readFileSync('components/edit/PlaybackChromeRoot.tsx', 'utf8'),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  let callback = '';
+  let count = 0;
+  const visit = (node: ts.Node) => {
+    if (
+      ts.isJsxAttribute(node) &&
+      node.name.getText(file) === 'onInputActivate' &&
+      node.initializer &&
+      ts.isJsxExpression(node.initializer) &&
+      node.initializer.expression
+    ) {
+      callback = node.initializer.expression.getText(file);
+      count++;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  expect(count).toBe(1);
+  let pausedUI = false;
+  const ttsPause = vi.fn();
+  const enginePause = vi.fn();
+  const activate = runInNewContext('(' + callback + ')', {
+    livePauseVersionRef: { current: 0 },
+    chatSessionType: 'discussion',
+    chatAreaRef: {
+      current: { pauseActiveLiveBuffer: (include: boolean) => chat.pauseActiveLiveBuffer(include) },
+    },
+    engineRef: { current: { getMode: () => 'live', pause: enginePause } },
+    discussionTTS: { pause: ttsPause },
+    setIsDiscussionPaused: (paused: boolean) => {
+      pausedUI = paused;
+    },
+    engineMode: 'live',
+  }) as () => void;
+  try {
+    act(activate);
+    await act(async () => {
+      release({});
+      await vi.waitFor(() => expect(buffers).toHaveLength(1));
+    });
+    expect(buffers[0].paused).toBe(true);
+    expect(enginePause).toHaveBeenCalledOnce();
+    expect(pausedUI).toBe(true);
+    expect(ttsPause).toHaveBeenCalledOnce();
+    await act(async () => {
+      if (pausedUI) chat.resumeActiveLiveBuffer();
+      await vi.advanceTimersByTimeAsync(6000);
+      await pending;
+    });
+    expect(speech.mock.calls.some(([text]) => text === 'Later speech.')).toBe(true);
+    expect(ActionEngine.prototype.execute).toHaveBeenCalledOnce();
+  } finally {
+    await act(async () => {
+      release({});
+      chat.resumeActiveLiveBuffer();
+      await vi.advanceTimersByTimeAsync(6000);
+      await pending;
+    });
+  }
+});
 
 it('clears a pre-session pause when resumed before the first buffer arrives', async () => {
   let release!: (value: object) => void;

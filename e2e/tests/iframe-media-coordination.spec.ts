@@ -651,6 +651,74 @@ for (const surface of ['app', 'standalone'] as const) {
       });
     }
 
+    if (surface === 'app')
+      for (const nested of [false, true]) {
+        test(`bounds pause traffic for a permanently unsilenced hidden frame (nested=${nested})`, async ({
+          page,
+        }) => {
+          if (!nested) {
+            await page.goto('http://localhost/media-test');
+            await page.addScriptTag({
+              content: bundle('app', false, false, undefined, {
+                kind: 'audio',
+                mode: 'closed',
+                stream: 'write',
+              }),
+            });
+            await expect(page.frameLocator('iframe').locator('#start-declarative')).toBeVisible();
+          } else await finishFrameLoad(page);
+          const outer = page.frames()[1];
+          const watched = [outer];
+          if (nested) {
+            const html = patchHtmlForIframe(
+              declarativeActivity({ kind: 'audio', mode: 'closed', stream: 'write' }),
+              undefined,
+              'storm-child',
+            );
+            await outer.evaluate((srcdoc) => {
+              const child = document.createElement('iframe');
+              child.name = 'storm-child';
+              child.sandbox.value = 'allow-scripts';
+              child.srcdoc = srcdoc;
+              document.body.append(child);
+            }, html);
+            await expect.poll(() => !!page.frame({ name: 'storm-child' })).toBe(true);
+            watched.push(page.frame({ name: 'storm-child' })!);
+          }
+          for (const frame of watched) {
+            await expect.poll(() => frame.evaluate('document.readyState')).toBe('complete');
+            await frame.evaluate(() => {
+              const state = { requests: 0, enabled: true };
+              Object.assign(window, { hiddenMediaTraffic: state });
+              window.addEventListener('message', (event) => {
+                if (event.data?.type !== 'maic:media:control:v1') return;
+                if (event.data.action === 'pause') state.requests++;
+                if (event.data.action === 'sync') state.enabled = event.data.enabled;
+              });
+            });
+          }
+          await page.getByRole('button', { name: 'Navigate', exact: true }).click();
+          await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+          for (const frame of watched)
+            await expect.poll(() => frame.evaluate('hiddenMediaTraffic.enabled')).toBe(false);
+          await outer.evaluate(() => new Promise((resolve) => setTimeout(resolve, 200)));
+          const before = await Promise.all(
+            watched.map((frame) => frame.evaluate<number>('hiddenMediaTraffic.requests')),
+          );
+          await outer.evaluate(() => new Promise((resolve) => setTimeout(resolve, 200)));
+          const after = await Promise.all(
+            watched.map((frame) => frame.evaluate<number>('hiddenMediaTraffic.requests')),
+          );
+          await test.info().attach('hidden-media-traffic', {
+            body: JSON.stringify({ before, after }),
+            contentType: 'application/json',
+          });
+          expect(before.every((requests) => requests > 0 && requests <= 8)).toBe(true);
+          expect(after).toEqual(before);
+          await expect.poll(() => page.evaluate('narrationPaused()')).toBe(true);
+        });
+      }
+
     for (const settings of [
       { method: 'setHTMLUnsafe', mode: 'open', kind: 'audio' },
       { method: 'setHTMLUnsafe', mode: 'closed', kind: 'audio' },
