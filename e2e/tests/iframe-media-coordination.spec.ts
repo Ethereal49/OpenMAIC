@@ -76,6 +76,26 @@ ${['audio', 'video'].map((tag) => `<button id="prime-parser-${tag}" onclick="pri
 <script>window.detached=new Audio(${JSON.stringify(audio)});detached.loop=true;
 window.widgetValues=[];window.addEventListener('message',event=>{if(event.data?.type==='SET_WIDGET_STATE')widgetValues.push(event.data.value)});window.autoplayEvents=0;window.explicitPlayCalls=0;window.primeParserMedia=async(tag)=>{window.parserMedia=document.getElementById('parser-'+tag);parserMedia.src=${JSON.stringify(audio)};await parserMedia.play();parserMedia.pause();parserMedia.remove();window.parserPrimed=true};
 window.startAutoplay=(tag,method)=>{if(!window.autoplayAudio){const play=HTMLMediaElement.prototype.play;HTMLMediaElement.prototype.play=function(){window.explicitPlayCalls++;return play.apply(this,arguments)};const original=tag?document.createElement(tag):null;let parsed;if(method==='innerHTML'||method==='insertAdjacentHTML'){const container=document.createElement('div');if(method==='innerHTML')container.innerHTML='<'+tag+'></'+tag+'>';else container.insertAdjacentHTML('beforeend','<'+tag+'></'+tag+'>');parsed=container.firstChild;}window.autoplayAudio=method==='parser-first'?window.unplayed[tag]:method==='parser'?window.parserMedia:!tag?new Audio():(method==='innerHTML'||method==='insertAdjacentHTML')?parsed:method==='cloneNode'?original.cloneNode(true):method==='importNode'?document.importNode(original,true):method==='createContextualFragment'?document.createRange().createContextualFragment('<'+tag+'></'+tag+'>').firstChild:method==='createElementNS'?document.createElementNS('http://www.w3.org/1999/xhtml',tag):original;if(tag==='video')autoplayAudio.playsInline=true;autoplayAudio.addEventListener('playing',()=>{window.autoplayEvents++;document.body.dataset.autoplayPlaying='true'});['pause','ended','emptied'].forEach(type=>autoplayAudio.addEventListener(type,()=>document.body.dataset.autoplayPlaying='false'));autoplayAudio.autoplay=true;}autoplayAudio.src=${JSON.stringify(audio)};};</script>`;
+type DeclarativeFixture = {
+  kind: 'audio' | 'video' | 'iframe' | 'raw';
+  mode: 'open' | 'closed';
+  scoped?: boolean;
+};
+function declarativeActivity({ kind, mode, scoped = false }: DeclarativeFixture): string {
+  const content =
+    kind === 'iframe'
+      ? `<iframe name="declarative-child" srcdoc="${escapeAttribute(nestedMedia)}"></iframe>`
+      : kind === 'raw'
+        ? '<iframe name="declarative-raw" title="Declarative activity" sandbox="allow-scripts" src="http://external.test/declarative"></iframe>'
+        : `<${kind} id="declarative-media" autoplay loop playsinline></${kind}>`;
+  return `<script>
+window.nativeAttachCalls=0;const nativeAttach=Element.prototype.attachShadow;Element.prototype.attachShadow=function(){nativeAttachCalls++;return nativeAttach.apply(this,arguments)};
+window.declarativePlayCalls=0;const nativePlay=HTMLMediaElement.prototype.play;HTMLMediaElement.prototype.play=function(){declarativePlayCalls++;return nativePlay.apply(this,arguments)};
+window.documentPlayEvents=0;document.addEventListener('play',()=>documentPlayEvents++,true);
+customElements.define('native-dsd-probe',class extends HTMLElement{connectedCallback(){window.declarativeRoot=this.getRootNode();this.remove()}});
+</script><div id="declarative-host"><template shadowrootmode="${mode}"${scoped ? ' shadowrootcustomelementregistry' : ''}><div><template shadowrootmode="${mode}"${scoped ? ' shadowrootcustomelementregistry' : ''}>${scoped ? '<svg onload="window.declarativeRoot=this.getRootNode();this.remove()"></svg>' : '<native-dsd-probe></native-dsd-probe>'}${content}</template></div></template></div>
+<button id="start-declarative" onclick="declarativeRoot.querySelector('audio,video').src=${escapeAttribute(JSON.stringify(audio))}">Start declarative autoplay</button>`;
+}
 const hostPath = 'components/scene-renderers/InteractiveIframeHost.tsx';
 const playbackPath = 'components/edit/PlaybackChromeRoot.tsx';
 
@@ -84,6 +104,7 @@ function bundle(
   restart = false,
   url = false,
   untrusted?: 'audio' | 'video' | 'url',
+  declarative?: DeclarativeFixture,
 ): string {
   return buildSync({
     absWorkingDir: process.cwd(),
@@ -96,7 +117,7 @@ import {createRoot} from 'react-dom/client';
 import {patchHtmlForIframe} from './lib/utils/iframe';
 import {createInteractiveMediaSession,mediaDocumentId,MEDIA_CONTROL} from './lib/interactive/media-bridge';
 const NativeAudio=window.Audio;window.audios=[];document.body.dataset.narrationPlaying='false';window.Audio=function(...args){const a=new NativeAudio(...args);if(!window.audios.length)['playing','pause','ended','emptied'].forEach(type=>a.addEventListener(type,()=>document.body.dataset.narrationPlaying=String(type==='playing')));window.audios.push(a);return a;};
-const html=${JSON.stringify(patchHtmlForIframe(activity + (untrusted === 'url' ? '<iframe id="untrusted" name="untrusted" title="External activity" src="http://external.test/nested"></iframe>' : untrusted ? `<iframe id="untrusted" name="untrusted" title="Native ${untrusted}" sandbox="allow-forms" srcdoc="${escapeAttribute(`<${untrusted} controls preload="auto" src="${audio}"></${untrusted}><script>window.untrustedScriptRan=true</script>`)}"></iframe>` : ''), undefined, 'current').replace('<script data-maic-media-document', dropControls + '<script data-maic-media-document'))};
+const html=${JSON.stringify(patchHtmlForIframe(activity + (declarative ? declarativeActivity(declarative) : '') + (untrusted === 'url' ? '<iframe id="untrusted" name="untrusted" title="External activity" src="http://external.test/nested"></iframe>' : untrusted ? `<iframe id="untrusted" name="untrusted" title="Native ${untrusted}" sandbox="allow-forms" srcdoc="${escapeAttribute(`<${untrusted} controls preload="auto" src="${audio}"></${untrusted}><script>window.untrustedScriptRan=true</script>`)}"></iframe>` : ''), undefined, 'current').replace('<script data-maic-media-document', dropControls + '<script data-maic-media-document'))};
 ${
   surface === 'standalone'
     ? `
@@ -560,6 +581,166 @@ for (const surface of ['app', 'standalone'] as const) {
         .toBe(true);
       await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
     });
+
+    test('fails closed for an unobservable scoped declarative registry', async ({ page }) => {
+      await page.goto('http://localhost/media-test');
+      await page.addScriptTag({
+        content: bundle(surface, false, false, undefined, {
+          kind: 'audio',
+          mode: 'closed',
+          scoped: true,
+        }),
+      });
+      await expect(page.frameLocator('iframe').locator('#start-declarative')).toBeVisible();
+      const frame = page.frames()[1];
+      await expect.poll(() => frame.evaluate('!!window.declarativeRoot')).toBe(true);
+      await page.frameLocator('iframe').locator('#start-declarative').click();
+      await expect
+        .poll(() =>
+          frame.evaluate(
+            '!declarativeRoot.querySelector("audio").paused && declarativeRoot.querySelector("audio").currentTime > 0',
+          ),
+        )
+        .toBe(true);
+      await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+      await expect.poll(() => page.evaluate('mode()')).toBe(surface === 'app' ? 'paused' : 'idle');
+      await expect.poll(() => page.evaluate('narrationPaused()')).toBe(true);
+    });
+
+    for (const mode of ['open', 'closed'] as const) {
+      for (const kind of ['audio', 'video'] as const) {
+        for (const mediaFirst of [false, true]) {
+          test(`coordinates declarative ${mode} ${kind} autoplay (mediaFirst=${mediaFirst})`, async ({
+            page,
+          }) => {
+            const native = await page.context().newPage();
+            try {
+              const control = declarativeActivity({ kind, mode });
+              await native.setContent(
+                `<iframe sandbox="allow-scripts" srcdoc="${escapeAttribute(control)}"></iframe>`,
+              );
+              await native
+                .frameLocator('iframe')
+                .getByRole('button', { name: 'Start declarative autoplay' })
+                .click();
+              await expect
+                .poll(() =>
+                  native.frames()[1].evaluate(() => {
+                    const media = (
+                      window as unknown as { declarativeRoot: ShadowRoot }
+                    ).declarativeRoot.querySelector<HTMLMediaElement>('audio,video')!;
+                    return !media.paused && media.currentTime > 0;
+                  }),
+                )
+                .toBe(true);
+              expect(await native.frames()[1].evaluate('nativeAttachCalls')).toBe(0);
+            } finally {
+              await native.close();
+            }
+            await page.goto('http://localhost/media-test');
+            await page.addScriptTag({
+              content: bundle(surface, false, false, undefined, { kind, mode }),
+            });
+            await expect(page.frameLocator('iframe').locator('#start-declarative')).toBeVisible();
+            const frame = page.frames()[1];
+            const state = () =>
+              frame.evaluate(() => {
+                const root = (window as unknown as { declarativeRoot: ShadowRoot }).declarativeRoot;
+                const media = root.querySelector<HTMLMediaElement>('audio,video')!;
+                return {
+                  paused: media.paused,
+                  time: media.currentTime,
+                  mode: root.mode,
+                  hidden: root.host.shadowRoot === null,
+                  marker: !!root.querySelector('[data-maic-shadow-root]'),
+                };
+              });
+            if (!mediaFirst) {
+              await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+              await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
+            }
+            await page
+              .frameLocator('iframe')
+              .getByRole('button', { name: 'Start declarative autoplay' })
+              .click();
+            await expect
+              .poll(async () => {
+                const s = await state();
+                return !s.paused && s.time > 0;
+              })
+              .toBe(true);
+            expect(await frame.evaluate('declarativePlayCalls')).toBe(0);
+            expect(await frame.evaluate('nativeAttachCalls')).toBe(0);
+            expect(await state()).toMatchObject({ mode, hidden: mode === 'closed', marker: false });
+            if (!mediaFirst) await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+            await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+            await expect.poll(async () => (await state()).paused).toBe(true);
+            await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
+          });
+        }
+      }
+      test(`coordinates an iframe in declarative ${mode} roots`, async ({ page }) => {
+        await page.goto('http://localhost/media-test');
+        await page.addScriptTag({
+          content: bundle(surface, false, false, undefined, { kind: 'iframe', mode }),
+        });
+        await expect(page.frameLocator('iframe').locator('#start-declarative')).toBeVisible();
+        await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+        await expect
+          .poll(() => page.frames().some((frame) => frame.name() === 'declarative-child'))
+          .toBe(true);
+        const child = page.frames().find((frame) => frame.name() === 'declarative-child')!;
+        await child.getByRole('button', { name: 'Nested context' }).click();
+        const state = () =>
+          child.evaluate(() => (window as unknown as { ctx: AudioContext }).ctx.state);
+        await expect.poll(state).toBe('running');
+        await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+        await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+        await expect.poll(state).toBe('suspended');
+        await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
+        expect(await page.frames()[1].evaluate('nativeAttachCalls')).toBe(0);
+      });
+      test(`guards an uninstrumented iframe in declarative ${mode} roots`, async ({ page }) => {
+        await page.route('http://external.test/declarative', (route) =>
+          route.fulfill({
+            contentType: 'text/html',
+            body: '<button onclick="window.ctx=new AudioContext();const o=ctx.createOscillator();o.connect(ctx.destination);o.start();ctx.resume()">Raw context</button>',
+          }),
+        );
+        await page.goto('http://localhost/media-test');
+        await page.addScriptTag({
+          content: bundle(surface, false, false, undefined, { kind: 'raw', mode }),
+        });
+        await expect(page.frameLocator('iframe').locator('#start-declarative')).toBeVisible();
+        const activity = page.frames()[1];
+        const guarded = () =>
+          activity.evaluate(() => {
+            const root = (window as unknown as { declarativeRoot: ShadowRoot }).declarativeRoot;
+            return !!root.querySelector('button') && !root.querySelector('iframe');
+          });
+        await expect.poll(guarded).toBe(true);
+        await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+        const open = await activity.evaluateHandle(
+          () =>
+            (window as unknown as { declarativeRoot: ShadowRoot }).declarativeRoot.querySelector(
+              'button',
+            )!,
+        );
+        await open.click();
+        await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+        await expect
+          .poll(() => page.frames().some((frame) => frame.name() === 'declarative-raw'))
+          .toBe(true);
+        const child = page.frames().find((frame) => frame.name() === 'declarative-raw')!;
+        await child.getByRole('button', { name: 'Raw context' }).click();
+        await expect
+          .poll(() => child.evaluate(() => (window as unknown as { ctx: AudioContext }).ctx.state))
+          .toBe('running');
+        await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+        await expect.poll(guarded).toBe(true);
+        await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
+      });
+    }
 
     for (const mode of ['open', 'closed'] as const) {
       test(`coordinates nested native WebAudio in ${mode} shadow roots`, async ({ page }) => {

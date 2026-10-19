@@ -39,7 +39,7 @@ function fixture(html?: string) {
 }
 const playing = { type: 'maic:media:state:v1', documentId: 'current', requestId: 0, playing: true };
 
-function bridgeFixture() {
+function bridgeFixture(unobservable = false, documentId = 'test') {
   const observers: Array<(records: Array<{ addedNodes: EventTarget[] }>) => void> = [];
   const observedRoots: unknown[] = [];
   class Observer {
@@ -182,6 +182,16 @@ function bridgeFixture() {
       target.elements.push(new Media());
     }
   }
+  class FrameShadowRoot extends FrameElement {
+    constructor(readonly host: FrameElement) {
+      super();
+    }
+  }
+  const definitions = new Map<string, new () => FrameElement & { connectedCallback(): void }>();
+  const customElements = {
+    define: (name: string, element: new () => FrameElement & { connectedCallback(): void }) =>
+      definitions.set(name, element),
+  };
   class Parser {
     parseFromString() {
       const root = new FrameElement();
@@ -224,7 +234,10 @@ function bridgeFixture() {
   });
   const getSynthesis = vi.fn(() => synthesis);
   Object.defineProperty(frameWindow, 'speechSynthesis', { get: getSynthesis });
-  const script = mediaBridgeScript('test').replace(/^<script[^>]*>|<\/script>$/g, '');
+  const script = mediaBridgeScript(documentId, unobservable).replace(
+    /^<script[^>]*>|<\/script>$/g,
+    '',
+  );
   const frameDocument = new FrameDocument();
   const nativePlay = vi.spyOn(frameDocument, 'addEventListener');
   const nativeInsert = vi.spyOn(FrameElement.prototype, 'insertAdjacentHTML');
@@ -235,6 +248,9 @@ function bridgeFixture() {
     Document: FrameDocument,
     Node: FrameNode,
     Element: FrameElement,
+    HTMLElement: FrameElement,
+    ShadowRoot: FrameShadowRoot,
+    customElements,
     DOMParser: Parser,
     MutationObserver: Observer,
     Set: TrackedSet,
@@ -245,7 +261,7 @@ function bridgeFixture() {
     frameWindow.dispatchEvent(
       new MessageEvent('message', {
         source: frameWindow.parent as unknown as Window,
-        data: { type: MEDIA_CONTROL, documentId: 'test', generation: 1, ...payload },
+        data: { type: MEDIA_CONTROL, documentId, generation: 1, ...payload },
       }),
     );
   control({ action: 'sync', enabled: true });
@@ -253,6 +269,8 @@ function bridgeFixture() {
     Media,
     FrameNode,
     FrameElement,
+    FrameShadowRoot,
+    definitions,
     nativeInsert,
     Parser,
     frameDocument,
@@ -283,6 +301,74 @@ function bridgeFixture() {
 }
 
 describe('injected media lifetime', () => {
+  it('preserves valid document ids that resemble bridge placeholders', async () => {
+    const { control, frameWindow } = bridgeFixture(false, '__UNOBSERVABLE__');
+    control({ action: 'pause', requestId: 89 });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ documentId: '__UNOBSERVABLE__', requestId: 89, playing: false }),
+      '*',
+    );
+  });
+  it('never acknowledges silence for a scoped registry whose closed root cannot be observed', async () => {
+    const { control, frameWindow } = bridgeFixture(true);
+    control({ action: 'pause', requestId: 90 });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ requestId: 90, playing: true }),
+      '*',
+    );
+    expect(
+      patchHtmlForIframe(
+        '<div><template shadowrootmode="closed" shadowrootcustomelementregistry><audio autoplay></audio></template></div>',
+        undefined,
+        'root',
+      ),
+    ).toContain('})("root", true);');
+  });
+  it('registers native declarative roots through a self-removing marker', () => {
+    const { FrameElement, FrameShadowRoot, frameDocument, definitions, observedRoots, control } =
+      bridgeFixture();
+    const host = new FrameElement();
+    frameDocument.hosts.push(host);
+    const root = new FrameShadowRoot(host);
+    const postMessage = vi.fn();
+    root.frames.push({
+      contentWindow: { postMessage },
+      getAttribute: (name) => (name === 'srcdoc' ? mediaBridgeScript('declarative-child') : null),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    const Marker = definitions.get('maic-media-root-test')!;
+    expect(Marker).toBeDefined();
+    const remove = vi.fn();
+    const marker = Object.assign(new Marker(), { getRootNode: () => root, remove });
+    marker.connectedCallback();
+    control({ action: 'sync', enabled: true });
+    expect(host.shadowRoot).toBeNull();
+    expect(remove).toHaveBeenCalledOnce();
+    expect(observedRoots).toContain(root);
+    expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ documentId: 'declarative-child' }),
+      '*',
+    );
+  });
+  it('inserts markers only into native declarative templates, without rewriting authored bytes', () => {
+    const html = `<div><template SHADOWROOTMODE="CLOSED" data-keep=exact><p>Closed</p><div><template shadowrootmode=open><p>Open</p></template></div></template></div><template><audio autoplay></audio></template><template shadowrootmode=" closed "><p>Invalid</p></template><script>const example='<template shadowrootmode="closed">';</script>`;
+    const patched = patchHtmlForIframe(html, undefined, 'Doc_A');
+    expect(
+      patched.match(/<maic-media-root-doc_a data-maic-shadow-root><\/maic-media-root-doc_a>/g),
+    ).toHaveLength(2);
+    expect(
+      patched.replaceAll(
+        '<maic-media-root-doc_a data-maic-shadow-root></maic-media-root-doc_a>',
+        '',
+      ),
+    ).toContain(html);
+    expect(patchHtmlForIframe(html)).toContain(html);
+  });
   it('discovers frames in a closed root returned by native attachShadow', () => {
     const { frameDocument, FrameElement, control } = bridgeFixture();
     const host = new FrameElement();

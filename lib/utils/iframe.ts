@@ -391,12 +391,35 @@ const ELEMENT_PICKER_SHIM = `<script data-iframe-element-picker-shim>
  */
 const MAX_MEDIA_SRCDOC_DEPTH = 4;
 
-function patchNestedMedia(html: string, documentId: string, depth = 0): string {
+function patchNestedMedia(
+  html: string,
+  documentId: string,
+  depth = 0,
+): { html: string; unobservable: boolean } {
   const patches: Array<{ start: number; end: number; replacement: string }> = [];
   let childIndex = 0;
+  let unobservable = false;
   const nodes: DefaultTreeAdapterTypes.Node[] = [parse(html, { sourceCodeLocationInfo: true })];
   while (nodes.length) {
     const node = nodes.pop()!;
+    if ('tagName' in node && node.tagName === 'template') {
+      const mode = node.attrs.find((attr) => attr.name === 'shadowrootmode')?.value.toLowerCase();
+      // A scoped registry can prevent the root marker from upgrading; do not acknowledge silence.
+      if (
+        mode === 'closed' &&
+        node.attrs.some((attr) => attr.name === 'shadowrootcustomelementregistry')
+      )
+        unobservable = true;
+      const offset = node.sourceCodeLocation?.startTag?.endOffset;
+      if ((mode === 'open' || mode === 'closed') && offset !== undefined) {
+        const tag = `maic-media-root-${documentId.toLowerCase()}`;
+        patches.push({
+          start: offset,
+          end: offset,
+          replacement: `<${tag} data-maic-shadow-root></${tag}>`,
+        });
+      }
+    }
     if ('tagName' in node && node.tagName === 'iframe') {
       const srcdoc = node.attrs.find((attr) => attr.name === 'srcdoc');
       const range = node.sourceCodeLocation?.attrs?.srcdoc;
@@ -405,9 +428,10 @@ function patchNestedMedia(html: string, documentId: string, depth = 0): string {
         !sandbox || /(?:^|[\t\n\f\r ])allow-scripts(?:[\t\n\f\r ]|$)/i.test(sandbox.value);
       if (srcdoc && range && scriptsAllowed && depth < MAX_MEDIA_SRCDOC_DEPTH) {
         const childId = `${documentId.slice(0, 100)}_${++childIndex}`;
+        const nested = patchNestedMedia(srcdoc.value, childId, depth + 1);
         const child = injectIntoDocumentHead(
-          patchNestedMedia(srcdoc.value, childId, depth + 1),
-          mediaBridgeScript(childId),
+          nested.html,
+          mediaBridgeScript(childId, nested.unobservable),
         );
         patches.push({
           start: range.startOffset,
@@ -422,7 +446,7 @@ function patchNestedMedia(html: string, documentId: string, depth = 0): string {
   }
   for (const patch of patches.sort((a, b) => b.start - a.start))
     html = html.slice(0, patch.start) + patch.replacement + html.slice(patch.end);
-  return html;
+  return { html, unobservable };
 }
 
 export function patchHtmlForIframe(
@@ -444,6 +468,7 @@ export function patchHtmlForIframe(
   body { min-height: 100vh; }
 </style>`;
 
+  const media = mediaId ? patchNestedMedia(html, mediaId) : { html, unobservable: false };
   const injection =
     '\n' +
     ERROR_CAPTURE_SHIM +
@@ -452,14 +477,11 @@ export function patchHtmlForIframe(
     '\n' +
     STORAGE_SHIM +
     '\n' +
-    (mediaId ? mediaBridgeScript(mediaId) : '') +
+    (mediaId ? mediaBridgeScript(mediaId, media.unobservable) : '') +
     '\n' +
     iframeCss;
 
-  const patched = injectIntoDocumentHead(
-    mediaId ? patchNestedMedia(html, mediaId) : html,
-    injection,
-  );
+  const patched = injectIntoDocumentHead(media.html, injection);
   // Body end, not head: the reader captures the scope element as it installs.
   return observation ? withObservationResponder(patched, observation) : patched;
 }

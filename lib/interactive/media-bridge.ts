@@ -5,7 +5,7 @@ let nextPauseRequestId = 0;
 let nextMediaGeneration = 0;
 
 /** Runs ahead of authored scripts; a literal avoids bundler helpers leaking into the sandbox. */
-const MEDIA_BRIDGE = String.raw`(function (documentId) {
+const MEDIA_BRIDGE = String.raw`(function (documentId, unobservable) {
   var media = new Set();
   var contexts = new Set();
   var suspended = new Set();
@@ -133,7 +133,7 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
     suspended.forEach(function (ref) { if (!ref.deref()) suspended.delete(ref); });
     window.parent.postMessage({
       type: 'maic:media:state:v1', documentId: documentId, generation: generation, requestId: requestId || 0,
-      playing: !!unsilenced || !!(synthesis && !synthesis.paused && (synthesis.speaking || synthesis.pending)) ||
+      playing: unobservable || !!unsilenced || !!(synthesis && !synthesis.paused && (synthesis.speaking || synthesis.pending)) ||
         Array.from(media).some(function (element) { return !element.paused && !element.ended; }) ||
         Array.from(contexts).some(function (context) { return context.state === 'running'; }) ||
         Array.from(children.values()).some(function (child) { return child.playing; }) ||
@@ -261,6 +261,17 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
       return result;
     }
   });
+  // Native declarative roots bypass attachShadow; the parser connects this marker inside them.
+  if (typeof customElements !== 'undefined') customElements.define('maic-media-root-' + documentId.toLowerCase(), class extends HTMLElement {
+    connectedCallback() {
+      var root = this.getRootNode();
+      if (root instanceof ShadowRoot) {
+        shadowRoots.set(root.host, observeRoot(root));
+        scanChildren();
+      }
+      this.remove();
+    }
+  });
   var attachShadow = typeof Element !== 'undefined' && Element.prototype.attachShadow;
   if (attachShadow) Element.prototype.attachShadow = new Proxy(attachShadow, {
     apply: function (target, receiver, args) {
@@ -386,11 +397,11 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
   observeRoot(document);
   scanChildren();
   report();
-})(__DOCUMENT_ID__);`;
+})(__DOCUMENT_ID__, __UNOBSERVABLE__);`;
 
-export function mediaBridgeScript(documentId: string): string {
+export function mediaBridgeScript(documentId: string, unobservable = false): string {
   if (!/^[a-zA-Z0-9_-]{1,128}$/.test(documentId)) throw new Error('Invalid media document id');
-  return `<script data-maic-media-document="${documentId}">${MEDIA_BRIDGE.replace('__DOCUMENT_ID__', JSON.stringify(documentId))}</script>`;
+  return `<script data-maic-media-document="${documentId}">${MEDIA_BRIDGE.replace('__UNOBSERVABLE__', unobservable ? 'true' : 'false').replace('__DOCUMENT_ID__', JSON.stringify(documentId))}</script>`;
 }
 
 export function mediaDocumentId(html: string | undefined): string | undefined {
