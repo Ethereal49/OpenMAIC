@@ -313,6 +313,7 @@ function bridgeFixture(unobservable = false, documentId = 'test', globals = {}) 
   frameWindow.parent = { postMessage: vi.fn() };
   Object.assign(frameWindow, {
     AudioContext: Context,
+    webkitAudioContext: Context,
     Audio: NativeAudio,
     SpeechSynthesis: Synthesis,
     ...globals,
@@ -378,6 +379,8 @@ function bridgeFixture(unobservable = false, documentId = 'test', globals = {}) 
       observers.forEach((callback) => callback([{ addedNodes: elements }])),
     Audio: (frameWindow as unknown as { Audio: AudioFactory }).Audio,
     Context: (frameWindow as unknown as { AudioContext: typeof Context }).AudioContext,
+    VendorContext: (frameWindow as unknown as { webkitAudioContext: typeof Context })
+      .webkitAudioContext,
     contextSet: sets[1],
     control,
     gesture: () =>
@@ -1404,6 +1407,34 @@ describe('injected media lifetime', () => {
 });
 
 describe('bridge-owned AudioContext suspension', () => {
+  it.each(['prototype', 'instance'] as const)('tracks the %s constructor alias', async (alias) => {
+    const { Context, contextSet, control } = bridgeFixture();
+    const seed = alias === 'instance' ? new Context() : undefined;
+    await seed?.close();
+    const Constructor = (seed?.constructor ?? Context.prototype.constructor) as typeof Context;
+    const sound = new Constructor();
+    expect(contextSet.has(sound)).toBe(true);
+    control({ action: 'pause', requestId: 1 });
+    await vi.waitFor(() => expect(sound.state).toBe('suspended'));
+  });
+
+  it('preserves shared vendor aliases, prototype descriptors and subclass construction', () => {
+    const { Context, VendorContext, contextSet } = bridgeFixture();
+    expect(VendorContext).toBe(Context);
+    expect(Object.getOwnPropertyDescriptor(Context.prototype, 'constructor')).toEqual({
+      value: Context,
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    });
+    class Derived extends Context {}
+    const sound = new Derived();
+    expect(sound).toBeInstanceOf(Derived);
+    expect(sound).toBeInstanceOf(Context);
+    expect(sound.constructor).toBe(Derived);
+    expect(contextSet.has(sound)).toBe(true);
+  });
+
   it('restores only bridge-suspended contexts on a fresh gesture', async () => {
     const { Context, control, gesture } = bridgeFixture();
     const sound = new Context();

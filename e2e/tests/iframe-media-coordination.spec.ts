@@ -863,6 +863,98 @@ for (const surface of ['app', 'standalone'] as const) {
       });
     }
 
+    for (const alias of ['prototype', 'instance'] as const)
+      test(`coordinates WebAudio through the ${alias} constructor alias`, async ({ page }) => {
+        await finishFrameLoad(page);
+        const frame = page.frames()[1];
+        await page.evaluate(() => {
+          const state = window as unknown as { aliasReady: boolean; aliasTrace: unknown[] };
+          state.aliasReady = false;
+          state.aliasTrace = [];
+          window.addEventListener('message', (event) => {
+            if (event.data?.type === 'alias-ready') state.aliasReady = true;
+            if (event.data?.type === 'maic:media:state:v1') state.aliasTrace.push(event.data);
+          });
+        });
+        const assertNarrating = async () => {
+          try {
+            await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
+          } catch (error) {
+            await test.info().attach('alias-frame-diagnostic', {
+              body: JSON.stringify(
+                await frame.evaluate(
+                  '({seed:window.aliasSeed?.state,alias:window.aliasContext?.state})',
+                ),
+              ),
+              contentType: 'application/json',
+            });
+            await test.info().attach('alias-narration-failure', {
+              body: JSON.stringify(
+                await page.evaluate(
+                  `({mode:mode(),trace:aliasTrace.slice(-30),audio:audios.map(a=>({paused:a.paused,ended:a.ended,ready:a.readyState,time:a.currentTime,error:a.error?.message}))})`,
+                ),
+              ),
+              contentType: 'application/json',
+            });
+            throw error;
+          }
+        };
+        await frame.evaluate(async (alias) => {
+          const seed = alias === 'instance' ? new AudioContext() : undefined;
+          Object.assign(window, { aliasSeed: seed });
+          if (seed) {
+            const stopped =
+              seed.state === 'suspended'
+                ? Promise.resolve()
+                : new Promise<void>((resolve) => {
+                    seed.addEventListener('statechange', () => {
+                      if (seed.state === 'suspended') resolve();
+                    });
+                  });
+            await seed.suspend();
+            await stopped;
+          }
+          const Constructor = (seed?.constructor ??
+            AudioContext.prototype.constructor) as typeof AudioContext;
+          const button = document.createElement('button');
+          button.textContent = 'Alias WebAudio';
+          button.onclick = () => {
+            const state = window as unknown as { aliasContext?: AudioContext };
+            if (!state.aliasContext) {
+              state.aliasContext = new Constructor({ latencyHint: 'interactive' });
+              const oscillator = state.aliasContext.createOscillator();
+              oscillator.connect(state.aliasContext.destination);
+              oscillator.start();
+            }
+            void state.aliasContext.resume();
+          };
+          document.body.append(button);
+          // Use an authored-suspended seed: WebKit can revive an unactivated closed context.
+          window.parent.postMessage({ type: 'alias-ready' }, '*');
+        }, alias);
+        await expect.poll(() => page.evaluate('aliasReady')).toBe(true);
+        await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+        await assertNarrating();
+        const play = page.frameLocator('iframe').getByRole('button', { name: 'Alias WebAudio' });
+        await play.press('Enter');
+        await expect.poll(() => frame.evaluate('aliasContext.state')).toBe('running');
+        await test.info().attach('alias-media-state', {
+          body: JSON.stringify({
+            alias,
+            context: await frame.evaluate('aliasContext.state'),
+            narrationPlaying: await page.locator('body').getAttribute('data-narration-playing'),
+          }),
+          contentType: 'application/json',
+        });
+        await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'false');
+        await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+        await expect.poll(() => frame.evaluate('aliasContext.state')).toBe('suspended');
+        await assertNarrating();
+        await play.press('Enter');
+        await expect.poll(() => frame.evaluate('aliasContext.state')).toBe('running');
+        await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'false');
+      });
+
     for (const tag of ['object', 'embed'] as const)
       for (const kind of ['html', 'audio'] as const)
         test(`guards opaque ${tag} ${kind} with an unload before narration resumes`, async ({

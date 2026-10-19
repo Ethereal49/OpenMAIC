@@ -449,10 +449,12 @@ const MEDIA_BRIDGE = String.raw`(function (documentId, unobservable) {
       });
     });
   }
+  var contextConstructors = new WeakMap();
   ['AudioContext', 'webkitAudioContext'].forEach(function (name) {
     var Native = window[name];
     if (!Native) return;
-    window[name] = new Proxy(Native, {
+    if (contextConstructors.has(Native)) { window[name] = contextConstructors.get(Native); return; }
+    var Tracked = new Proxy(Native, {
       construct: function (target, args, newTarget) {
         var context = Reflect.construct(target, args, newTarget);
         var state = { suspend: context.suspend, resume: context.resume, suspended: null, pending: null, resumeRequested: false };
@@ -472,6 +474,9 @@ const MEDIA_BRIDGE = String.raw`(function (documentId, unobservable) {
         return context;
       }
     });
+    contextConstructors.set(Native, Tracked);
+    Object.defineProperty(Native.prototype, 'constructor', Object.assign({}, Object.getOwnPropertyDescriptor(Native.prototype, 'constructor'), { value: Tracked }));
+    window[name] = Tracked;
   });
   window.addEventListener('message', function (event) {
     var data = event.data;
