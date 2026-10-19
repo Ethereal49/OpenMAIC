@@ -287,6 +287,7 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
     const discussionTTS = useDiscussionTTS({
       beforePlayback: pauseInteractiveMedia,
       onPlaybackBlocked: () => {
+        livePauseVersionRef.current++;
         if (
           chatAreaRef.current?.pauseActiveLiveBuffer(engineRef.current?.getMode() === 'live') ||
           engineRef.current?.getMode() === 'live'
@@ -439,6 +440,7 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
     const autoStartRef = useRef(false);
     // Discussion buffer-level pause state (distinct from soft-pause which aborts SSE)
     const [isDiscussionPaused, setIsDiscussionPaused] = useState(false);
+    const livePauseVersionRef = useRef(0);
 
     /**
      * Resume a soft-paused topic: re-call /chat with existing session messages.
@@ -522,6 +524,7 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
 
     // Shared stop-discussion handler (used by both Roundtable and Canvas toolbar)
     const handleStopDiscussion = useCallback(async () => {
+      livePauseVersionRef.current++;
       await chatAreaRef.current?.stopActiveSession();
     }, []);
 
@@ -594,6 +597,7 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
       ref,
       () => ({
         teardown: async () => {
+          livePauseVersionRef.current++;
           await chatAreaRef.current?.endActiveSession();
           if (discussionAbortRef.current) {
             discussionAbortRef.current.abort();
@@ -604,6 +608,7 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
           resetSceneState();
         },
         pauseForInteractiveMedia: () => {
+          livePauseVersionRef.current++;
           const engine = engineRef.current;
           if (engine?.getMode() === 'playing') {
             engine.pause();
@@ -1875,14 +1880,12 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
                         selectionVersion: draft.selectionVersion,
                       }
                     : undefined;
-                  // Always clear Level-1 pause state — the closure may hold a stale
-                  // isDiscussionPaused value (e.g. voice input's onTranscription callback
-                  // captures onMessageSend before React re-renders with the updated state).
-                  setIsDiscussionPaused(false);
-                  // Clear the sticky livePausedRef so the next agent-loop buffer
-                  // starts unpaused. (pauseActiveLiveBuffer sets a ref that new
-                  // buffers inherit — must be cleared before sendMessage creates one.)
-                  chatAreaRef.current?.resumeActiveLiveBuffer();
+                  const resumeVersion = ++livePauseVersionRef.current;
+                  const sceneEpoch = sceneEpochRef.current;
+                  // New text/actions stay buffered while the question is sent immediately.
+                  chatAreaRef.current?.pauseActiveLiveBuffer(true);
+                  setIsDiscussionPaused(true);
+                  const silence = pauseInteractiveMedia().catch(() => false);
                   // Flush any buffered / in-flight TTS audio from the previous
                   // agent turn so it doesn't leak into the next round.
                   discussionTTS.cleanup();
@@ -1923,6 +1926,14 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
                   // no blank gap between userMessage expiry and the SSE thinking event.
                   // The real SSE event will overwrite this with the same or updated value.
                   setThinkingState({ stage: 'director' });
+                  if (
+                    (await silence) &&
+                    resumeVersion === livePauseVersionRef.current &&
+                    sceneEpoch === sceneEpochRef.current
+                  ) {
+                    chatAreaRef.current?.resumeActiveLiveBuffer();
+                    setIsDiscussionPaused(false);
+                  }
                 }}
                 onDiscussionStart={() => {
                   // User clicks "Join" on ProactiveCard
@@ -1938,6 +1949,7 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
                   handleContinueDiscussion();
                 }}
                 onInputActivate={() => {
+                  livePauseVersionRef.current++;
                   // Level-1 pause: freeze buffer tick + TTS audio while SSE keeps buffering.
                   // User resumes manually via Space / pause button after closing the input.
                   // No isDiscussionPaused guard — always attempt to pause the buffer.
@@ -1960,6 +1972,7 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
                 onPlayPause={handlePlayPause}
                 isDiscussionPaused={isDiscussionPaused}
                 onDiscussionPause={() => {
+                  livePauseVersionRef.current++;
                   const paused = chatAreaRef.current?.pauseActiveLiveBuffer(
                     engineRef.current?.getMode() === 'live',
                   );
@@ -1969,7 +1982,13 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
                   }
                 }}
                 onDiscussionResume={async () => {
-                  if ((await discussionTTS.resume()) === false) return;
+                  const resumeVersion = ++livePauseVersionRef.current;
+                  const sceneEpoch = sceneEpochRef.current;
+                  const isCurrent = () =>
+                    resumeVersion === livePauseVersionRef.current &&
+                    sceneEpoch === sceneEpochRef.current;
+                  if (!(await pauseInteractiveMedia().catch(() => false)) || !isCurrent()) return;
+                  if ((await discussionTTS.resume()) === false || !isCurrent()) return;
                   chatAreaRef.current?.resumeActiveLiveBuffer();
                   setIsDiscussionPaused(false);
                 }}

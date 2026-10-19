@@ -846,6 +846,149 @@ describe('PlaybackChromeRoot element-reference ownership', () => {
     expect(mocks.enginePause).not.toHaveBeenCalled();
   });
 
+  it.each([true, false])(
+    'does not clear a media pause on a live reply until silence is confirmed (%s)',
+    async (silent) => {
+      mocks.engineMode = 'live';
+      mocks.pauseActiveLiveBuffer.mockReturnValue(true);
+      const ownerRef = createRef<PlaybackChromeRootHandle>();
+      await renderOwner({ ref: ownerRef });
+      act(() => ownerRef.current?.pauseForInteractiveMedia());
+      expect(settingsState.ttsEnabled).toBe(false);
+      let finish!: (value: boolean) => void;
+      mocks.sendFrameMessage.mockReturnValue(
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+      );
+      let sending!: Promise<void>;
+      await act(async () => {
+        sending = (mocks.roundtableProps!.onMessageSend as (text: string) => Promise<void>)(
+          'A live reply',
+        );
+      });
+      expect(mocks.sendMessage).toHaveBeenCalledOnce();
+      expect(mocks.resumeActiveLiveBuffer).not.toHaveBeenCalled();
+      expect(mocks.roundtableProps?.isDiscussionPaused).toBe(true);
+      await act(async () => {
+        finish(silent);
+        await sending;
+      });
+      expect(mocks.resumeActiveLiveBuffer).toHaveBeenCalledTimes(silent ? 1 : 0);
+      expect(mocks.roundtableProps?.isDiscussionPaused).toBe(!silent);
+    },
+  );
+
+  it.each(['media', 'input', 'pause', 'stop', 'scene'] as const)(
+    'ignores a live reply silence result after a newer %s intent',
+    async (intent) => {
+      mocks.engineMode = 'live';
+      mocks.pauseActiveLiveBuffer.mockReturnValue(true);
+      const ownerRef = createRef<PlaybackChromeRootHandle>();
+      await renderOwner({ ref: ownerRef });
+      let finish!: (silent: boolean) => void;
+      mocks.sendFrameMessage.mockReturnValue(
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+      );
+      let sending!: Promise<void>;
+      await act(async () => {
+        sending = (mocks.roundtableProps!.onMessageSend as (text: string) => Promise<void>)(
+          'A reply',
+        );
+      });
+      await act(async () => {
+        if (intent === 'media') ownerRef.current!.pauseForInteractiveMedia();
+        if (intent === 'input') (mocks.roundtableProps!.onInputActivate as () => void)();
+        if (intent === 'pause') (mocks.roundtableProps!.onDiscussionPause as () => void)();
+        if (intent === 'stop')
+          await (mocks.roundtableProps!.onStopDiscussion as () => Promise<void>)();
+        if (intent === 'scene') {
+          stageState.currentSceneId = 'next-scene';
+          await rerenderOwner();
+        }
+      });
+      await act(async () => {
+        finish(true);
+        await sending;
+      });
+      expect(mocks.sendMessage).toHaveBeenCalledOnce();
+      expect(mocks.resumeActiveLiveBuffer).not.toHaveBeenCalled();
+    },
+  );
+
+  it('lets only the latest live reply release its buffered response', async () => {
+    mocks.engineMode = 'live';
+    await renderOwner();
+    let first!: (silent: boolean) => void;
+    let second!: (silent: boolean) => void;
+    mocks.sendFrameMessage
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          first = resolve;
+        }),
+      )
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          second = resolve;
+        }),
+      );
+    let sendingFirst!: Promise<void>;
+    let sendingSecond!: Promise<void>;
+    await act(async () => {
+      const send = mocks.roundtableProps!.onMessageSend as (text: string) => Promise<void>;
+      sendingFirst = send('First question');
+      sendingSecond = send('Second question');
+    });
+    expect(mocks.sendMessage).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      first(true);
+      await sendingFirst;
+    });
+    expect(mocks.resumeActiveLiveBuffer).not.toHaveBeenCalled();
+    await act(async () => {
+      second(true);
+      await sendingSecond;
+    });
+    expect(mocks.resumeActiveLiveBuffer).toHaveBeenCalledOnce();
+  });
+
+  it('does not start TTS after manual pause supersedes a pending resume', async () => {
+    mocks.engineMode = 'live';
+    await renderOwner();
+    let finish!: (silent: boolean) => void;
+    mocks.sendFrameMessage.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    let resuming!: Promise<void>;
+    await act(async () => {
+      resuming = (mocks.roundtableProps!.onDiscussionResume as () => Promise<void>)();
+    });
+    act(() => (mocks.roundtableProps!.onDiscussionPause as () => void)());
+    await act(async () => {
+      finish(true);
+      await resuming;
+    });
+    expect(mocks.discussionResume).not.toHaveBeenCalled();
+    expect(mocks.resumeActiveLiveBuffer).not.toHaveBeenCalled();
+  });
+
+  it('keeps manual discussion resume paused when media cannot confirm silence with TTS disabled', async () => {
+    mocks.engineMode = 'live';
+    await renderOwner();
+    act(() => mocks.discussionOptions?.onPlaybackBlocked?.());
+    mocks.sendFrameMessage.mockResolvedValueOnce(false);
+    await act(async () => (mocks.roundtableProps!.onDiscussionResume as () => Promise<void>)());
+    expect(mocks.discussionResume).not.toHaveBeenCalled();
+    expect(mocks.resumeActiveLiveBuffer).not.toHaveBeenCalled();
+    expect(mocks.roundtableProps!.isDiscussionPaused).toBe(true);
+    await act(async () => (mocks.roundtableProps!.onDiscussionResume as () => Promise<void>)());
+    expect(mocks.resumeActiveLiveBuffer).toHaveBeenCalledOnce();
+  });
+
   it('owns an Interactive identity delivered through the Stage sibling seam', async () => {
     stageState.scenes = [interactiveScene];
     stageState.currentSceneId = interactiveScene.id;

@@ -151,10 +151,13 @@ function bridgeFixture() {
     hosts: FrameElement[] = [];
     frames: FrameDocument['frames'] = [];
     shadowRoot: FrameElement | null = null;
-    attachShadow() {
-      if (this.shadowRoot) throw new Error('already attached');
-      this.shadowRoot = new FrameElement();
-      return this.shadowRoot;
+    private attached = false;
+    attachShadow(options: { mode: 'open' | 'closed' } = { mode: 'open' }) {
+      if (this.attached) throw new Error('already attached');
+      this.attached = true;
+      const root = new FrameElement();
+      if (options.mode === 'open') this.shadowRoot = root;
+      return root;
     }
     private html = '';
     get innerHTML() {
@@ -280,6 +283,25 @@ function bridgeFixture() {
 }
 
 describe('injected media lifetime', () => {
+  it('discovers frames in a closed root returned by native attachShadow', () => {
+    const { frameDocument, FrameElement, control } = bridgeFixture();
+    const host = new FrameElement();
+    frameDocument.hosts.push(host);
+    const root = host.attachShadow({ mode: 'closed' });
+    expect(host.shadowRoot).toBeNull();
+    const postMessage = vi.fn();
+    root.frames.push({
+      contentWindow: { postMessage },
+      getAttribute: (name) => (name === 'srcdoc' ? mediaBridgeScript('closed-child') : null),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    control({ action: 'sync', enabled: true });
+    expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ documentId: 'closed-child', action: 'sync' }),
+      '*',
+    );
+  });
   it('does not initialize native synthesis in frames that never use it', () => {
     const { getSynthesis, synthesis, Utterance, frameWindow } = bridgeFixture();
     expect(getSynthesis).not.toHaveBeenCalled();

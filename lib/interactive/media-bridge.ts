@@ -21,6 +21,7 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
   var childGeneration = 0;
   var childRequest = 0;
   var observer;
+  var shadowRoots = new WeakMap();
   var observation = { childList: true, subtree: true, attributes: true, attributeFilter: ['srcdoc', 'sandbox'] };
   function observeRoot(root) {
     if (observer) observer.observe(root, observation);
@@ -68,7 +69,8 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
     function scan(root) {
       root.querySelectorAll('iframe').forEach(function (frame) { frames.add(frame); });
       root.querySelectorAll('*').forEach(function (element) {
-        if (element.shadowRoot) scan(observeRoot(element.shadowRoot));
+        var shadow = element.shadowRoot || shadowRoots.get(element);
+        if (shadow) scan(observeRoot(shadow));
       });
     }
     scan(document);
@@ -261,7 +263,11 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
   });
   var attachShadow = typeof Element !== 'undefined' && Element.prototype.attachShadow;
   if (attachShadow) Element.prototype.attachShadow = new Proxy(attachShadow, {
-    apply: function (target, receiver, args) { return observeRoot(Reflect.apply(target, receiver, args)); }
+    apply: function (target, receiver, args) {
+      var root = Reflect.apply(target, receiver, args);
+      shadowRoots.set(receiver, root);
+      return observeRoot(root);
+    }
   });
   var Audio = window.Audio;
   if (Audio) window.Audio = new Proxy(Audio, {

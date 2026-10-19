@@ -120,7 +120,7 @@ const runtime={errors:{},clearScene(){}};const useSceneRuntimeErrors=Object.assi
 const InteractiveRuntimeErrorBanner=()=>null;const resolveInteractivePickerMode=()=>null;const createObservationSession=()=>null;
 ${sourceFunction(hostPath, 'PooledIframe')}
 const currentScene={id:'s',type:'interactive',actions:[{id:'speech',type:'speech',text:'Narration',audioId:'narration'},{id:'second',type:'speech',text:'Second narration',audioId:'narration'}],content:{type:'interactive'}};
-const setLectureSpeech=()=>{};const setActiveBubbleId=()=>{};const setEngineMode=()=>{};const lectureSessionIdRef={current:null};const chatAreaRef={current:null};const discussionTTS={pause(){}};const setIsDiscussionPaused=()=>{};
+const livePauseVersionRef={current:0};const setLectureSpeech=()=>{};const setActiveBubbleId=()=>{};const setEngineMode=()=>{};const lectureSessionIdRef={current:null};const chatAreaRef={current:null};const discussionTTS={pause(){}};const setIsDiscussionPaused=()=>{};
 window.proactive=null;
 let currentSceneId='s';const pauseInteractiveMedia=${sourceFunction(playbackPath, 'pauseInteractiveMedia')};
 const engine=new PlaybackEngine([currentScene],{clearEffects(){},execute(){}},new AudioPlayer(),{beforeSpeech:pauseInteractiveMedia,onModeChange:${sourceFunction(playbackPath, 'onModeChange')},onSpeechStart:${sourceFunction(playbackPath, 'onSpeechStart')},onPlaybackReadyChange:${sourceFunction(playbackPath, 'onPlaybackReadyChange')},onProactiveShow:trigger=>{window.proactive=trigger.id}});const engineRef={current:engine};
@@ -561,75 +561,125 @@ for (const surface of ['app', 'standalone'] as const) {
       await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
     });
 
-    test('coordinates nested native WebAudio in open shadow roots', async ({ page }) => {
-      await page.getByRole('button', { name: 'Narrate', exact: true }).click();
-      await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
-      await page.frames()[1].evaluate(() => {
-        const host = document.createElement('div');
-        document.body.append(host);
-        const root = host.attachShadow({ mode: 'open' });
-        const nestedHost = document.createElement('div');
-        root.append(nestedHost);
-        const nestedRoot = nestedHost.attachShadow({ mode: 'open' });
-        const frame = document.querySelector<HTMLIFrameElement>('#nested')!;
-        frame.style.display = 'block';
-        nestedRoot.append(frame);
+    for (const mode of ['open', 'closed'] as const) {
+      test(`coordinates nested native WebAudio in ${mode} shadow roots`, async ({ page }) => {
+        await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+        await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
+        await page.frames()[1].evaluate((mode) => {
+          const host = document.createElement('div');
+          document.body.append(host);
+          const root = host.attachShadow({ mode });
+          const nestedHost = document.createElement('div');
+          root.append(nestedHost);
+          const nestedRoot = nestedHost.attachShadow({ mode });
+          const frame = document.querySelector<HTMLIFrameElement>('#nested')!;
+          frame.style.display = 'block';
+          nestedRoot.append(frame);
+        }, mode);
+        await expect.poll(() => page.frames()[1].childFrames()[0]?.childFrames().length).toBe(1);
+        const inner = page.frames()[1].childFrames()[0].childFrames()[0];
+        await inner.getByRole('button', { name: 'Nested context' }).click();
+        const state = () =>
+          inner.evaluate(() => (window as unknown as { ctx: AudioContext }).ctx.state);
+        await expect.poll(state).toBe('running');
+        await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+        await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+        await expect.poll(state).toBe('suspended');
+        await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
       });
-      const inner = page.frameLocator('iframe').frameLocator('#nested').frameLocator('#inner');
-      await inner.getByRole('button', { name: 'Nested context' }).click();
-      await expect
-        .poll(() =>
-          inner
-            .locator('body')
-            .evaluate(() => (window as unknown as { ctx: AudioContext }).ctx.state),
-        )
-        .toBe('running');
-      await expect.poll(() => page.evaluate('mode()')).toBe('paused');
-      await page.getByRole('button', { name: 'Narrate', exact: true }).click();
-      await expect
-        .poll(() =>
-          inner
-            .locator('body')
-            .evaluate(() => (window as unknown as { ctx: AudioContext }).ctx.state),
-        )
-        .toBe('suspended');
-      await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
-    });
 
-    test('guards an uninstrumented iframe inserted into a new open shadow root', async ({
-      page,
-    }) => {
-      await page.getByRole('button', { name: 'Narrate', exact: true }).click();
-      await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
-      await page.frames()[1].evaluate(async () => {
-        const host = document.createElement('div');
-        document.body.append(host);
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        const root = host.attachShadow({ mode: 'open' });
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        const frame = document.createElement('iframe');
-        frame.title = 'Shadow activity';
-        frame.sandbox.add('allow-scripts');
-        frame.srcdoc =
-          '<button onclick="window.ctx=new AudioContext();let o=ctx.createOscillator();o.connect(ctx.destination);o.start();ctx.resume()">Native context activity</button>';
-        root.append(frame);
+      test(`guards an uninstrumented iframe inserted into a new ${mode} shadow root`, async ({
+        page,
+      }) => {
+        await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+        await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
+        const activity = page.frames()[1];
+        await activity.evaluate(async (mode) => {
+          const host = document.createElement('div');
+          document.body.append(host);
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          const root = host.attachShadow({ mode });
+          (window as unknown as { shadowForTest: ShadowRoot }).shadowForTest = root;
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          const frame = document.createElement('iframe');
+          frame.title = 'Shadow activity';
+          frame.name = 'shadow-raw';
+          frame.sandbox.add('allow-scripts');
+          frame.srcdoc =
+            '<button onclick="window.ctx=new AudioContext();let o=ctx.createOscillator();o.connect(ctx.destination);o.start();ctx.resume()">Native context activity</button>';
+          root.append(frame);
+        }, mode);
+        const button = () =>
+          activity.evaluateHandle(
+            () =>
+              (window as unknown as { shadowForTest: ShadowRoot }).shadowForTest.querySelector(
+                'button',
+              )!,
+          );
+        await expect
+          .poll(() =>
+            activity.evaluate(
+              () =>
+                !!(window as unknown as { shadowForTest: ShadowRoot }).shadowForTest.querySelector(
+                  'button',
+                ),
+            ),
+          )
+          .toBe(true);
+        const open = await button();
+        await open.click();
+        await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+        await expect
+          .poll(() => page.frames().some((frame) => frame.name() === 'shadow-raw'))
+          .toBe(true);
+        const child = page.frames().find((frame) => frame.name() === 'shadow-raw')!;
+        await child.getByRole('button', { name: 'Native context activity' }).click();
+        await expect
+          .poll(() => child.evaluate(() => (window as unknown as { ctx: AudioContext }).ctx.state))
+          .toBe('running');
+        await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+        await expect
+          .poll(() =>
+            activity.evaluate(() => {
+              const root = (window as unknown as { shadowForTest: ShadowRoot }).shadowForTest;
+              return !!root.querySelector('button') && !root.querySelector('iframe');
+            }),
+          )
+          .toBe(true);
+        await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
       });
-      const activity = page.frameLocator('iframe');
-      await activity.getByRole('button', { name: /Shadow activity — open/ }).click();
-      await expect.poll(() => page.evaluate('mode()')).toBe('paused');
-      const child = activity.frameLocator('iframe[title="Shadow activity"]');
-      await child.getByRole('button', { name: 'Native context activity' }).click();
-      await expect
-        .poll(() =>
-          child
-            .locator('body')
-            .evaluate(() => (window as unknown as { ctx: AudioContext }).ctx.state),
-        )
-        .toBe('running');
-      await page.getByRole('button', { name: 'Narrate', exact: true }).click();
-      await expect(activity.getByRole('button', { name: /Shadow activity — open/ })).toBeVisible();
-      await expect(activity.locator('iframe[title="Shadow activity"]')).toHaveCount(0);
-      await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
+    }
+
+    test('keeps source-less document access governed by the opaque sandbox', async ({ page }) => {
+      const probe = () => {
+        const frame = document.createElement('iframe');
+        document.body.append(frame);
+        try {
+          frame.contentWindow!.document.write('<p id="authored">Authored content</p>');
+          return { writable: true, error: null };
+        } catch (error) {
+          return { writable: false, error: (error as Error).name };
+        } finally {
+          frame.remove();
+        }
+      };
+      expect(await page.frames()[1].evaluate(probe)).toEqual({
+        writable: false,
+        error: 'SecurityError',
+      });
+      const control = await page.context().newPage();
+      try {
+        for (const trusted of [false, true]) {
+          await control.setContent(
+            `<iframe sandbox="allow-scripts${trusted ? ' allow-same-origin' : ''}" srcdoc="<body>Native control</body>"></iframe>`,
+          );
+          expect(await control.frames()[1].evaluate(probe)).toEqual(
+            trusted ? { writable: true, error: null } : { writable: false, error: 'SecurityError' },
+          );
+        }
+      } finally {
+        await control.close();
+      }
     });
 
     test('restores bridge-suspended WebAudio on a later user gesture without authored resume', async ({
