@@ -74,7 +74,7 @@ const activity = `<button id="audio" onclick="document.querySelector('audio').pl
 <button id="autoplay-createElement-video" onclick="startAutoplay('video','createElement')">DOM video</button>
 <button id="autoplay-createElementNS-audio" onclick="startAutoplay('audio','createElementNS')">DOM NS audio</button>
 <button id="autoplay-createElementNS-video" onclick="startAutoplay('video','createElementNS')">DOM NS video</button>
-${['setHTMLUnsafe', 'cloneContents', 'insertAdjacentHTML', 'outerHTML', 'parser-first', 'parser', 'cloneNode', 'importNode', 'createContextualFragment', 'innerHTML'].flatMap((method) => ['audio', 'video'].map((tag) => `<button id="autoplay-${method}-${tag}" onclick="startAutoplay('${tag}','${method}')">${method} ${tag}</button>`)).join('')}
+${['setHTML', 'setHTMLUnsafe', 'cloneContents', 'insertAdjacentHTML', 'outerHTML', 'parser-first', 'parser', 'cloneNode', 'importNode', 'createContextualFragment', 'innerHTML'].flatMap((method) => ['audio', 'video'].map((tag) => `<button id="autoplay-${method}-${tag}" onclick="startAutoplay('${tag}','${method}')">${method} ${tag}</button>`)).join('')}
 <button id="context" onclick="if(!window.ctx){ctx=new AudioContext();let o=ctx.createOscillator();o.connect(ctx.destination);o.start()}ctx.resume()">WebAudio</button>
 ${['audio', 'video'].map((tag) => `<button id="prime-parser-${tag}" onclick="primeParserMedia('${tag}')">Prime parser ${tag}</button><${tag} id="parser-${tag}" src="${audio}" loop></${tag}>`).join('')}
 <audio id="unplayed-audio" loop></audio><video id="unplayed-video" loop></video><script>window.unplayed={audio:document.getElementById('unplayed-audio'),video:document.getElementById('unplayed-video')};unplayed.audio.remove();unplayed.video.remove();</script>
@@ -83,7 +83,7 @@ ${['audio', 'video'].map((tag) => `<button id="prime-parser-${tag}" onclick="pri
 <form action="http://localhost/without-media-bridge"><button id="self-navigate">Navigate frame</button></form>
 <script>window.detached=new Audio(${JSON.stringify(audio)});detached.loop=true;
 window.widgetValues=[];window.addEventListener('message',event=>{if(event.data?.type==='SET_WIDGET_STATE')widgetValues.push(event.data.value)});window.autoplayEvents=0;window.explicitPlayCalls=0;window.primeParserMedia=async(tag)=>{window.parserMedia=document.getElementById('parser-'+tag);parserMedia.src=${JSON.stringify(audio)};await parserMedia.play();parserMedia.pause();parserMedia.remove();window.parserPrimed=true};
-window.startAutoplay=(tag,method)=>{if(!window.autoplayAudio){const play=HTMLMediaElement.prototype.play;HTMLMediaElement.prototype.play=function(){window.explicitPlayCalls++;return play.apply(this,arguments)};const original=tag?document.createElement(tag):null;let parsed;if(method==='innerHTML'||method==='insertAdjacentHTML'||method==='outerHTML'||method==='setHTMLUnsafe'||method==='cloneContents'){const container=document.createElement('div');if(method==='setHTMLUnsafe')container.setHTMLUnsafe('<'+tag+'></'+tag+'>');else if(method==='innerHTML'||method==='cloneContents')container.innerHTML='<'+tag+'></'+tag+'>';else if(method==='outerHTML'){container.append(document.createElement('span'));container.firstChild.outerHTML='<'+tag+'></'+tag+'>'}else container.insertAdjacentHTML('beforeend','<'+tag+'></'+tag+'>');if(method==='cloneContents'){const range=document.createRange();range.selectNodeContents(container);parsed=range.cloneContents().firstChild}else parsed=container.firstChild;}window.autoplayAudio=method==='parser-first'?window.unplayed[tag]:method==='parser'?window.parserMedia:!tag?new Audio():(method==='innerHTML'||method==='insertAdjacentHTML'||method==='outerHTML'||method==='setHTMLUnsafe'||method==='cloneContents')?parsed:method==='cloneNode'?original.cloneNode(true):method==='importNode'?document.importNode(original,true):method==='createContextualFragment'?document.createRange().createContextualFragment('<'+tag+'></'+tag+'>').firstChild:method==='createElementNS'?document.createElementNS('http://www.w3.org/1999/xhtml',tag):original;if(tag==='video')autoplayAudio.playsInline=true;autoplayAudio.addEventListener('playing',()=>{window.autoplayEvents++;document.body.dataset.autoplayPlaying='true'});['pause','ended','emptied'].forEach(type=>autoplayAudio.addEventListener(type,()=>document.body.dataset.autoplayPlaying='false'));autoplayAudio.autoplay=true;}autoplayAudio.src=${JSON.stringify(audio)};};</script>`;
+window.startAutoplay=(tag,method)=>{if(!window.autoplayAudio){const play=HTMLMediaElement.prototype.play;HTMLMediaElement.prototype.play=function(){window.explicitPlayCalls++;return play.apply(this,arguments)};const original=tag?document.createElement(tag):null;let parsed;if(method==='innerHTML'||method==='insertAdjacentHTML'||method==='outerHTML'||(method==='setHTMLUnsafe'||method==='setHTML')||method==='cloneContents'){const container=document.createElement('div');if((method==='setHTMLUnsafe'||method==='setHTML'))container[method]('<'+tag+'></'+tag+'>');else if(method==='innerHTML'||method==='cloneContents')container.innerHTML='<'+tag+'></'+tag+'>';else if(method==='outerHTML'){container.append(document.createElement('span'));container.firstChild.outerHTML='<'+tag+'></'+tag+'>'}else container.insertAdjacentHTML('beforeend','<'+tag+'></'+tag+'>');if(method==='cloneContents'){const range=document.createRange();range.selectNodeContents(container);parsed=range.cloneContents().firstChild}else parsed=container.firstChild;}window.autoplayAudio=method==='parser-first'?window.unplayed[tag]:method==='parser'?window.parserMedia:!tag?new Audio():(method==='innerHTML'||method==='insertAdjacentHTML'||method==='outerHTML'||(method==='setHTMLUnsafe'||method==='setHTML')||method==='cloneContents')?parsed:method==='cloneNode'?original.cloneNode(true):method==='importNode'?document.importNode(original,true):method==='createContextualFragment'?document.createRange().createContextualFragment('<'+tag+'></'+tag+'>').firstChild:method==='createElementNS'?document.createElementNS('http://www.w3.org/1999/xhtml',tag):original;if(tag==='video')autoplayAudio.playsInline=true;autoplayAudio.addEventListener('playing',()=>{window.autoplayEvents++;document.body.dataset.autoplayPlaying='true'});['pause','ended','emptied'].forEach(type=>autoplayAudio.addEventListener(type,()=>document.body.dataset.autoplayPlaying='false'));autoplayAudio.autoplay=true;}autoplayAudio.src=${JSON.stringify(audio)};};</script>`;
 type DeclarativeFixture = {
   kind: 'audio' | 'video' | 'iframe' | 'raw';
   mode: 'open' | 'closed';
@@ -252,12 +252,13 @@ async function adjacentAutoplayStarts(
   method:
     | 'insertAdjacentHTML'
     | 'outerHTML'
+    | 'setHTML'
     | 'setHTMLUnsafe'
     | 'cloneContents' = 'insertAdjacentHTML',
 ): Promise<boolean> {
   const control = await page.context().newPage();
   try {
-    const html = `<button id="start">Start</button><script>document.querySelector('button').onclick=()=>{const container=document.createElement('div');${method === 'outerHTML' ? `container.append(document.createElement('span'));container.firstChild.outerHTML='<${tag}></${tag}>';` : method === 'setHTMLUnsafe' ? `if(!container.setHTMLUnsafe)return;container.setHTMLUnsafe('<${tag}></${tag}>');` : method === 'cloneContents' ? `container.innerHTML='<${tag}></${tag}>';const range=document.createRange();range.selectNodeContents(container);window.rangeClone=range.cloneContents();` : `container.insertAdjacentHTML('beforeend','<${tag}></${tag}>');`}window.parserMedia=${method === 'cloneContents' ? 'rangeClone' : 'container'}.firstChild;parserMedia.playsInline=true;parserMedia.autoplay=true;parserMedia.src=${JSON.stringify(audio)}};</script>`;
+    const html = `<button id="start">Start</button><script>document.querySelector('button').onclick=()=>{const container=document.createElement('div');${method === 'outerHTML' ? `container.append(document.createElement('span'));container.firstChild.outerHTML='<${tag}></${tag}>';` : method === 'setHTMLUnsafe' || method === 'setHTML' ? `if(!container.${method})return;container.${method}('<${tag}></${tag}>');` : method === 'cloneContents' ? `container.innerHTML='<${tag}></${tag}>';const range=document.createRange();range.selectNodeContents(container);window.rangeClone=range.cloneContents();` : `container.insertAdjacentHTML('beforeend','<${tag}></${tag}>');`}window.parserMedia=${method === 'cloneContents' ? 'rangeClone' : 'container'}.firstChild;parserMedia.playsInline=true;parserMedia.autoplay=true;parserMedia.src=${JSON.stringify(audio)}};</script>`;
     await control.route('http://localhost/parser-control', (route) =>
       route.fulfill({
         contentType: 'text/html',
@@ -1539,6 +1540,24 @@ for (const surface of ['app', 'standalone'] as const) {
       });
     }
 
+    test('preserves native safe HTML sanitization', async ({ page }) => {
+      const source =
+        '<p onclick="window.unsafeRan=true">Safe text</p><script>window.unsafeRan=true</script><audio controls data-safe="ok"></audio>';
+      const parse = `(function(source){const container=document.createElement('div');if(typeof container.setHTML!=='function')return {supported:false};const result=container.setHTML(source);return {supported:true,html:container.innerHTML,result:typeof result,scripts:container.querySelectorAll('script').length,handler:container.querySelector('p').getAttribute('onclick')}})(${JSON.stringify(source)})`;
+      const native = await page.context().newPage();
+      try {
+        await native.setContent(
+          '<iframe sandbox="allow-scripts" srcdoc="<!doctype html><body></body>"></iframe>',
+        );
+        const control = await native.frames()[1].evaluate(parse);
+        test.skip(!control.supported, 'Native safe HTML API is unavailable in this engine.');
+        expect(control).toMatchObject({ scripts: 0, handler: null });
+        expect(await page.frames()[1].evaluate(parse)).toEqual(control);
+      } finally {
+        await native.close();
+      }
+    });
+
     for (const creation of [
       'Audio',
       'createElement-audio',
@@ -1546,6 +1565,7 @@ for (const surface of ['app', 'standalone'] as const) {
       'createElementNS-audio',
       'createElementNS-video',
       ...[
+        'setHTML',
         'setHTMLUnsafe',
         'cloneContents',
         'insertAdjacentHTML',
@@ -1559,12 +1579,16 @@ for (const surface of ['app', 'standalone'] as const) {
       ].flatMap((method) => ['audio', 'video'].map((tag) => `${method}-${tag}`)),
     ]) {
       test(`coordinates detached ${creation} playback and reuse`, async ({ page, browserName }) => {
-        if (creation.startsWith('setHTMLUnsafe') || creation.startsWith('cloneContents')) {
+        if (creation.startsWith('setHTML') || creation.startsWith('cloneContents')) {
           test.skip(
             !(await adjacentAutoplayStarts(
               page,
               creation.endsWith('video') ? 'video' : 'audio',
-              creation.startsWith('setHTMLUnsafe') ? 'setHTMLUnsafe' : 'cloneContents',
+              creation.startsWith('setHTMLUnsafe')
+                ? 'setHTMLUnsafe'
+                : creation.startsWith('setHTML-')
+                  ? 'setHTML'
+                  : 'cloneContents',
             )),
             'Native API/autoplay does not start in the independent same-engine no-bridge control.',
           );

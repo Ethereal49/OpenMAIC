@@ -196,6 +196,10 @@ function bridgeFixture(unobservable = false, documentId = 'test') {
       this.html = html;
       this.elements = [new Media()];
     }
+    setHTML(html: string, _options?: unknown) {
+      if (html === 'invalid') throw new TypeError('invalid HTML');
+      this.elements = [new Media()];
+    }
     setHTMLUnsafe(html: string, _options?: unknown) {
       if (html === 'invalid') throw new TypeError('invalid HTML');
       this.elements = [new Media()];
@@ -956,7 +960,7 @@ describe('injected media lifetime', () => {
     expect(mediaDocumentId(grandchild)).toBeTruthy();
     expect(grandchild).toContain(leaf);
   });
-  it.each(['DOMParser', 'innerHTML', 'setHTMLUnsafe', 'cloneContents'])(
+  it.each(['DOMParser', 'innerHTML', 'setHTMLUnsafe', 'setHTML', 'cloneContents'])(
     'observes detached parser media from %s without explicit play',
     (factory) => {
       const { FrameElement, Parser, FrameRange, media, frameWindow, control } = bridgeFixture();
@@ -973,9 +977,9 @@ describe('injected media lifetime', () => {
           root.innerHTML = 'invalid';
         }).toThrow('invalid HTML');
       }
-      if (factory === 'setHTMLUnsafe') {
-        expect(root.setHTMLUnsafe('<audio></audio>', {})).toBeUndefined();
-        expect(() => root.setHTMLUnsafe('invalid')).toThrow('invalid HTML');
+      if (factory === 'setHTMLUnsafe' || factory === 'setHTML') {
+        expect(root[factory]('<audio></audio>', {})).toBeUndefined();
+        expect(() => root[factory]('invalid')).toThrow('invalid HTML');
       }
       expect(media.size).toBe(0);
       const element = root.elements[0];

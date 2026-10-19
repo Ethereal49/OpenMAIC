@@ -15,6 +15,8 @@ import ts from 'typescript';
 import { shouldAutoResumeLecture } from '@/lib/playback/auto-resume';
 
 const fixture = vi.hoisted(() => ({
+  capabilities: vi.fn(async () => ({})),
+  modelUsable: true,
   state: {
     stage: { id: 'ephemeral-options', name: 'Cue replies', createdAt: 1, updatedAt: 1 },
     chats: [] as ChatSession[],
@@ -35,12 +37,14 @@ vi.mock('@/lib/store', () => ({
 }));
 vi.mock('@/lib/hooks/use-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }));
 vi.mock('@/lib/model-settings/capabilities', () => ({
-  loadModelCapabilities: async () => ({}),
-  classroomChatUsable: () => true,
+  loadModelCapabilities: () => fixture.capabilities(),
+  classroomChatUsable: () => fixture.modelUsable,
 }));
 vi.mock('@/components/chat/session-list', () => ({ SessionList: () => null }));
 vi.mock('@/components/chat/lecture-notes-view', () => ({ LectureNotesView: () => null }));
 afterEach(() => {
+  fixture.modelUsable = true;
+  fixture.capabilities.mockReset().mockResolvedValue({});
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.useRealTimers();
@@ -359,9 +363,13 @@ it('persists a pending lecture sentence once when the real player retries it', a
   }
 });
 
-it.each([false, true])(
-  'keeps a late SSE buffer paused and cancels it on session stop (%s)',
-  async (stop) => {
+it.each([
+  [false, false],
+  [true, false],
+  [false, true],
+] as const)(
+  'keeps a late SSE buffer paused (stop=%s, capabilities pending=%s)',
+  async (stop, pending) => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     vi.useFakeTimers();
     fixture.state.chats = [];
@@ -381,12 +389,26 @@ it.each([false, true])(
     const ref = createRef<ChatAreaRef>();
     try {
       await act(async () => root.render(createElement(ChatArea, { ref, onLiveSpeech: live })));
+      let releaseCapabilities!: (value: object) => void;
+      if (pending)
+        fixture.capabilities.mockReturnValueOnce(
+          new Promise((resolve) => {
+            releaseCapabilities = resolve;
+          }),
+        );
       let run!: Promise<void>;
       await act(async () => {
+        if (pending) ref.current!.pauseActiveLiveBuffer(true);
         run = ref.current!.sendMessage('Late response');
       });
+      if (pending) {
+        expect(fetch).not.toHaveBeenCalled();
+        // The first silence check has completed, but the idle Q&A admission is still pending.
+        act(() => ref.current!.resumeActiveLiveBuffer());
+        expect(ref.current!.pauseActiveLiveBuffer(false)).toBe(true);
+        await act(async () => releaseCapabilities({}));
+      } else expect(ref.current!.pauseActiveLiveBuffer()).toBe(true);
       expect(fetch).toHaveBeenCalledOnce();
-      expect(ref.current!.pauseActiveLiveBuffer()).toBe(true);
       if (stop) await act(async () => ref.current!.endActiveSession());
       await act(async () => {
         const events = [
@@ -431,6 +453,31 @@ it.each([false, true])(
           live.mock.calls.some(([text]) => typeof text === 'string' && text.includes('Late')),
         ).toBe(true);
       }
+    } finally {
+      act(() => root.unmount());
+    }
+  },
+);
+
+it.each(['rejected', 'unusable'] as const)(
+  'clears pending live admission after capabilities are %s',
+  async (failure) => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    fixture.state.chats = [];
+    const root = createRoot(document.createElement('div'));
+    const ref = createRef<ChatAreaRef>();
+    try {
+      await act(async () => root.render(createElement(ChatArea, { ref })));
+      if (failure === 'rejected')
+        fixture.capabilities.mockRejectedValueOnce(new Error('capabilities unavailable'));
+      else fixture.modelUsable = false;
+      await act(async () => {
+        const send = ref.current!.sendMessage('Admission fails');
+        if (failure === 'rejected') await expect(send).rejects.toThrow('capabilities unavailable');
+        else await send;
+      });
+      expect(fixture.state.chats).toHaveLength(0);
+      expect(ref.current!.pauseActiveLiveBuffer(false)).toBe(false);
     } finally {
       act(() => root.unmount());
     }

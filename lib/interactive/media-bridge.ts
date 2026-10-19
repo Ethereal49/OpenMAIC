@@ -288,14 +288,16 @@ const MEDIA_BRIDGE = String.raw`(function (documentId, unobservable) {
   [typeof Element === 'undefined' ? {} : Element.prototype,
     typeof ShadowRoot === 'undefined' ? {} : ShadowRoot.prototype
   ].forEach(function (prototype) {
-    var setHTMLUnsafe = prototype.setHTMLUnsafe;
-    if (setHTMLUnsafe) prototype.setHTMLUnsafe = new Proxy(setHTMLUnsafe, {
-      apply: function (target, receiver, args) {
-        var result = Reflect.apply(target, receiver, args);
-        observe(receiver);
-        visitShadowRoots(receiver, observeRoot);
-        return result;
-      }
+    ['setHTMLUnsafe', 'setHTML'].forEach(function (name) {
+      var native = prototype[name];
+      if (native) prototype[name] = new Proxy(native, {
+        apply: function (target, receiver, args) {
+          var result = Reflect.apply(target, receiver, args);
+          observe(receiver);
+          visitShadowRoots(receiver, observeRoot);
+          return result;
+        }
+      });
     });
     ['innerHTML', 'outerHTML'].forEach(function (name) {
       var descriptor = Object.getOwnPropertyDescriptor(prototype, name);

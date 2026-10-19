@@ -131,6 +131,8 @@ export interface MockRunOptions {
   failFirstScene?: boolean;
   /** The owner is at the limit on active runs: a start is refused. */
   atRunLimit?: boolean;
+  /** Optional test barrier before the run writes its second scene and completes. */
+  firstSceneBarrier?: Promise<void>;
   /** How long the run takes between its scripted steps (ms). */
   stepMs?: number;
   /** How long a `countdown` run's outline waits before the run confirms it (ms). */
@@ -470,7 +472,7 @@ export class MockGenerationRun {
         this.push('scene_ready', { index: 0, sceneId: 'scene-0', order: 0 });
       },
       // Long enough for the classroom to mount while the run still generates.
-      () => new Promise((resolve) => setTimeout(resolve, 1_500)),
+      () => this.options.firstSceneBarrier ?? new Promise((resolve) => setTimeout(resolve, 1_500)),
       async () => {
         this.push('step_started', { step: 'scene:1:content' });
         await this.storeCourse(2);
