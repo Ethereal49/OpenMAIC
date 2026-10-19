@@ -24,6 +24,8 @@ const mocks = vi.hoisted(() => ({
         onProgress?: (snapshot: { actionIndex: number; sceneId: string }) => void;
         onUserInterrupt?: (text: string) => void;
         onComplete?: () => void;
+        onProactiveShow?: (trigger: { id: string; question: string; agentId?: string }) => void;
+        onProactiveHide?: () => void;
       }
     | undefined,
   startLecture: vi.fn(),
@@ -41,6 +43,7 @@ const mocks = vi.hoisted(() => ({
   engineStart: vi.fn(),
   engineContinuePlayback: vi.fn(),
   handleUserInterrupt: vi.fn(),
+  confirmDiscussion: vi.fn(),
 }));
 
 const textElement = {
@@ -330,8 +333,12 @@ vi.mock('@/lib/playback', () => ({
     pause() {
       mocks.enginePause();
     }
-    confirmDiscussion() {}
-    skipDiscussion() {}
+    confirmDiscussion() {
+      mocks.confirmDiscussion();
+    }
+    skipDiscussion() {
+      mocks.engineOptions?.onProactiveHide?.();
+    }
   },
   computePlaybackView: () => ({ kind: 'idle', isTopicActive: mocks.topicActive }),
   shouldAutoResumeLecture: () => false,
@@ -434,6 +441,7 @@ describe('PlaybackChromeRoot element-reference ownership', () => {
     mocks.engineStart.mockReset();
     mocks.engineContinuePlayback.mockReset();
     mocks.handleUserInterrupt.mockReset();
+    mocks.confirmDiscussion.mockReset();
     stageState.scenes = [scene, secondScene];
     stageState.currentSceneId = scene.id;
     stageState.setCurrentSceneId.mockClear();
@@ -987,6 +995,100 @@ describe('PlaybackChromeRoot element-reference ownership', () => {
     expect(mocks.roundtableProps!.isDiscussionPaused).toBe(true);
     await act(async () => (mocks.roundtableProps!.onDiscussionResume as () => Promise<void>)());
     expect(mocks.resumeActiveLiveBuffer).toHaveBeenCalledOnce();
+  });
+
+  it.each([true, false])(
+    'gates a visible proactive Join on iframe silence with TTS disabled (%s)',
+    async (silent) => {
+      mocks.engineMode = 'playing';
+      mocks.enginePause.mockImplementation(() => {
+        mocks.engineMode = 'paused';
+      });
+      mocks.pauseActiveLiveBuffer.mockReturnValue(false);
+      const ownerRef = createRef<PlaybackChromeRootHandle>();
+      await renderOwner({ ref: ownerRef });
+      act(() =>
+        mocks.engineOptions?.onProactiveShow?.({
+          id: 'join',
+          question: 'Discuss',
+          agentId: 'teacher',
+        }),
+      );
+      act(() => ownerRef.current!.pauseForInteractiveMedia());
+      expect(mocks.engineMode).toBe('paused');
+      expect(mocks.pauseActiveLiveBuffer).toHaveBeenCalledWith(false);
+      expect(settingsState.ttsEnabled).toBe(false);
+      let finish!: (value: boolean) => void;
+      mocks.sendFrameMessage.mockReturnValueOnce(
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+      );
+      let joining!: Promise<void>;
+      await act(async () => {
+        joining = (mocks.roundtableProps!.onDiscussionStart as () => Promise<void>)();
+      });
+      expect(mocks.confirmDiscussion).not.toHaveBeenCalled();
+      await act(async () => {
+        finish(silent);
+        await joining;
+      });
+      expect(mocks.confirmDiscussion).toHaveBeenCalledTimes(silent ? 1 : 0);
+      if (!silent) {
+        await act(async () => (mocks.roundtableProps!.onDiscussionStart as () => Promise<void>)());
+        expect(mocks.confirmDiscussion).toHaveBeenCalledOnce();
+      }
+    },
+  );
+
+  it.each(['hide', 'show', 'scene', 'media'] as const)(
+    'discards a pending proactive Join after a newer %s intent',
+    async (intent) => {
+      mocks.engineMode = 'paused';
+      const ownerRef = createRef<PlaybackChromeRootHandle>();
+      await renderOwner({ ref: ownerRef });
+      act(() =>
+        mocks.engineOptions?.onProactiveShow?.({ id: 'old', question: 'Old', agentId: 'teacher' }),
+      );
+      let finish!: (value: boolean) => void;
+      mocks.sendFrameMessage.mockReturnValueOnce(
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+      );
+      let joining!: Promise<void>;
+      await act(async () => {
+        joining = (mocks.roundtableProps!.onDiscussionStart as () => Promise<void>)();
+      });
+      await act(async () => {
+        if (intent === 'hide') (mocks.roundtableProps!.onDiscussionSkip as () => void)();
+        if (intent === 'show')
+          mocks.engineOptions?.onProactiveShow?.({
+            id: 'new',
+            question: 'New',
+            agentId: 'teacher',
+          });
+        if (intent === 'scene') {
+          stageState.currentSceneId = secondScene.id;
+          await rerenderOwner();
+        }
+        if (intent === 'media') ownerRef.current!.pauseForInteractiveMedia();
+      });
+      await act(async () => {
+        finish(true);
+        await joining;
+      });
+      expect(mocks.confirmDiscussion).not.toHaveBeenCalled();
+    },
+  );
+  it('keeps proactive Join retryable after a media guard rejection', async () => {
+    mocks.engineMode = 'paused';
+    await renderOwner();
+    mocks.sendFrameMessage.mockRejectedValueOnce(new Error('unavailable frame'));
+    await act(async () => (mocks.roundtableProps!.onDiscussionStart as () => Promise<void>)());
+    expect(mocks.confirmDiscussion).not.toHaveBeenCalled();
+    await act(async () => (mocks.roundtableProps!.onDiscussionStart as () => Promise<void>)());
+    expect(mocks.confirmDiscussion).toHaveBeenCalledOnce();
   });
 
   it('owns an Interactive identity delivered through the Stage sibling seam', async () => {

@@ -168,6 +168,13 @@ function bridgeFixture(unobservable = false, documentId = 'test') {
       this.html = html;
       this.elements = [new Media()];
     }
+    get outerHTML() {
+      return this.html;
+    }
+    set outerHTML(html: string) {
+      if (html === 'invalid') throw new TypeError('invalid HTML');
+      if (this.parentNode) this.parentNode.elements = [new Media()];
+    }
     querySelectorAll(selector?: string) {
       if (selector === 'iframe') return this.frames;
       if (selector === '*') return this.hosts;
@@ -301,6 +308,35 @@ function bridgeFixture(unobservable = false, documentId = 'test') {
 }
 
 describe('injected media lifetime', () => {
+  it('observes detached replacements made through native outerHTML and their later reuse', async () => {
+    const { FrameElement, Media, frameWindow, control, media } = bridgeFixture();
+    const parent = new FrameElement();
+    const replaced = new FrameElement();
+    replaced.parentNode = parent;
+    replaced.outerHTML = '<audio autoplay></audio>';
+    const element = parent.elements[0];
+    expect(element).toBeInstanceOf(Media);
+    element.paused = false;
+    element.dispatchEvent(new Event('play'));
+    expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ playing: true }),
+      '*',
+    );
+    control({ action: 'pause', requestId: 88 });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(element.paused).toBe(true);
+    expect(media.size).toBe(0);
+    element.paused = false;
+    element.dispatchEvent(new Event('play'));
+    expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ playing: true }),
+      '*',
+    );
+    expect(() => {
+      replaced.outerHTML = 'invalid';
+    }).toThrow('invalid HTML');
+  });
   it('preserves valid document ids that resemble bridge placeholders', async () => {
     const { control, frameWindow } = bridgeFixture(false, '__UNOBSERVABLE__');
     control({ action: 'pause', requestId: 89 });

@@ -248,10 +248,17 @@ const MEDIA_BRIDGE = String.raw`(function (documentId, unobservable) {
   [typeof Element === 'undefined' ? {} : Element.prototype,
     typeof ShadowRoot === 'undefined' ? {} : ShadowRoot.prototype
   ].forEach(function (prototype) {
-    var descriptor = Object.getOwnPropertyDescriptor(prototype, 'innerHTML');
-    if (descriptor && descriptor.set) Object.defineProperty(prototype, 'innerHTML', Object.assign({}, descriptor, {
-      set: function (html) { Reflect.apply(descriptor.set, this, [html]); observe(this); }
-    }));
+    ['innerHTML', 'outerHTML'].forEach(function (name) {
+      var descriptor = Object.getOwnPropertyDescriptor(prototype, name);
+      if (descriptor && descriptor.set) Object.defineProperty(prototype, name, Object.assign({}, descriptor, {
+        set: function (html) {
+          // outerHTML removes the receiver, so retain its parent before the native replacement.
+          var root = name === 'outerHTML' ? this.parentNode : this;
+          Reflect.apply(descriptor.set, this, [html]);
+          observe(root || this);
+        }
+      }));
+    });
   });
   var insertAdjacentHTML = typeof Element !== 'undefined' && Element.prototype.insertAdjacentHTML;
   if (insertAdjacentHTML) Element.prototype.insertAdjacentHTML = new Proxy(insertAdjacentHTML, {

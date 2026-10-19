@@ -24,6 +24,14 @@ function sourceFunction(path: string, name: string): string {
       ts.isCallExpression(node.initializer)
     )
       result = node.initializer.arguments[0].getText(file);
+    if (
+      ts.isJsxAttribute(node) &&
+      node.name.getText(file) === name &&
+      node.initializer &&
+      ts.isJsxExpression(node.initializer) &&
+      node.initializer.expression
+    )
+      result = node.initializer.expression.getText(file);
     if (ts.isPropertyAssignment(node) && node.name.getText(file) === name)
       result = node.initializer.getText(file);
     ts.forEachChild(node, visit);
@@ -66,7 +74,7 @@ const activity = `<button id="audio" onclick="document.querySelector('audio').pl
 <button id="autoplay-createElement-video" onclick="startAutoplay('video','createElement')">DOM video</button>
 <button id="autoplay-createElementNS-audio" onclick="startAutoplay('audio','createElementNS')">DOM NS audio</button>
 <button id="autoplay-createElementNS-video" onclick="startAutoplay('video','createElementNS')">DOM NS video</button>
-${['insertAdjacentHTML', 'parser-first', 'parser', 'cloneNode', 'importNode', 'createContextualFragment', 'innerHTML'].flatMap((method) => ['audio', 'video'].map((tag) => `<button id="autoplay-${method}-${tag}" onclick="startAutoplay('${tag}','${method}')">${method} ${tag}</button>`)).join('')}
+${['insertAdjacentHTML', 'outerHTML', 'parser-first', 'parser', 'cloneNode', 'importNode', 'createContextualFragment', 'innerHTML'].flatMap((method) => ['audio', 'video'].map((tag) => `<button id="autoplay-${method}-${tag}" onclick="startAutoplay('${tag}','${method}')">${method} ${tag}</button>`)).join('')}
 <button id="context" onclick="if(!window.ctx){ctx=new AudioContext();let o=ctx.createOscillator();o.connect(ctx.destination);o.start()}ctx.resume()">WebAudio</button>
 ${['audio', 'video'].map((tag) => `<button id="prime-parser-${tag}" onclick="primeParserMedia('${tag}')">Prime parser ${tag}</button><${tag} id="parser-${tag}" src="${audio}" loop></${tag}>`).join('')}
 <audio id="unplayed-audio" loop></audio><video id="unplayed-video" loop></video><script>window.unplayed={audio:document.getElementById('unplayed-audio'),video:document.getElementById('unplayed-video')};unplayed.audio.remove();unplayed.video.remove();</script>
@@ -75,7 +83,7 @@ ${['audio', 'video'].map((tag) => `<button id="prime-parser-${tag}" onclick="pri
 <form action="http://localhost/without-media-bridge"><button id="self-navigate">Navigate frame</button></form>
 <script>window.detached=new Audio(${JSON.stringify(audio)});detached.loop=true;
 window.widgetValues=[];window.addEventListener('message',event=>{if(event.data?.type==='SET_WIDGET_STATE')widgetValues.push(event.data.value)});window.autoplayEvents=0;window.explicitPlayCalls=0;window.primeParserMedia=async(tag)=>{window.parserMedia=document.getElementById('parser-'+tag);parserMedia.src=${JSON.stringify(audio)};await parserMedia.play();parserMedia.pause();parserMedia.remove();window.parserPrimed=true};
-window.startAutoplay=(tag,method)=>{if(!window.autoplayAudio){const play=HTMLMediaElement.prototype.play;HTMLMediaElement.prototype.play=function(){window.explicitPlayCalls++;return play.apply(this,arguments)};const original=tag?document.createElement(tag):null;let parsed;if(method==='innerHTML'||method==='insertAdjacentHTML'){const container=document.createElement('div');if(method==='innerHTML')container.innerHTML='<'+tag+'></'+tag+'>';else container.insertAdjacentHTML('beforeend','<'+tag+'></'+tag+'>');parsed=container.firstChild;}window.autoplayAudio=method==='parser-first'?window.unplayed[tag]:method==='parser'?window.parserMedia:!tag?new Audio():(method==='innerHTML'||method==='insertAdjacentHTML')?parsed:method==='cloneNode'?original.cloneNode(true):method==='importNode'?document.importNode(original,true):method==='createContextualFragment'?document.createRange().createContextualFragment('<'+tag+'></'+tag+'>').firstChild:method==='createElementNS'?document.createElementNS('http://www.w3.org/1999/xhtml',tag):original;if(tag==='video')autoplayAudio.playsInline=true;autoplayAudio.addEventListener('playing',()=>{window.autoplayEvents++;document.body.dataset.autoplayPlaying='true'});['pause','ended','emptied'].forEach(type=>autoplayAudio.addEventListener(type,()=>document.body.dataset.autoplayPlaying='false'));autoplayAudio.autoplay=true;}autoplayAudio.src=${JSON.stringify(audio)};};</script>`;
+window.startAutoplay=(tag,method)=>{if(!window.autoplayAudio){const play=HTMLMediaElement.prototype.play;HTMLMediaElement.prototype.play=function(){window.explicitPlayCalls++;return play.apply(this,arguments)};const original=tag?document.createElement(tag):null;let parsed;if(method==='innerHTML'||method==='insertAdjacentHTML'||method==='outerHTML'){const container=document.createElement('div');if(method==='innerHTML')container.innerHTML='<'+tag+'></'+tag+'>';else if(method==='outerHTML'){container.append(document.createElement('span'));container.firstChild.outerHTML='<'+tag+'></'+tag+'>'}else container.insertAdjacentHTML('beforeend','<'+tag+'></'+tag+'>');parsed=container.firstChild;}window.autoplayAudio=method==='parser-first'?window.unplayed[tag]:method==='parser'?window.parserMedia:!tag?new Audio():(method==='innerHTML'||method==='insertAdjacentHTML'||method==='outerHTML')?parsed:method==='cloneNode'?original.cloneNode(true):method==='importNode'?document.importNode(original,true):method==='createContextualFragment'?document.createRange().createContextualFragment('<'+tag+'></'+tag+'>').firstChild:method==='createElementNS'?document.createElementNS('http://www.w3.org/1999/xhtml',tag):original;if(tag==='video')autoplayAudio.playsInline=true;autoplayAudio.addEventListener('playing',()=>{window.autoplayEvents++;document.body.dataset.autoplayPlaying='true'});['pause','ended','emptied'].forEach(type=>autoplayAudio.addEventListener(type,()=>document.body.dataset.autoplayPlaying='false'));autoplayAudio.autoplay=true;}autoplayAudio.src=${JSON.stringify(audio)};};</script>`;
 type DeclarativeFixture = {
   kind: 'audio' | 'video' | 'iframe' | 'raw';
   mode: 'open' | 'closed';
@@ -141,11 +149,11 @@ const runtime={errors:{},clearScene(){}};const useSceneRuntimeErrors=Object.assi
 const InteractiveRuntimeErrorBanner=()=>null;const resolveInteractivePickerMode=()=>null;const createObservationSession=()=>null;
 ${sourceFunction(hostPath, 'PooledIframe')}
 const currentScene={id:'s',type:'interactive',actions:[{id:'speech',type:'speech',text:'Narration',audioId:'narration'},{id:'second',type:'speech',text:'Second narration',audioId:'narration'}],content:{type:'interactive'}};
-const livePauseVersionRef={current:0};const setLectureSpeech=()=>{};const setActiveBubbleId=()=>{};const setEngineMode=()=>{};const lectureSessionIdRef={current:null};const chatAreaRef={current:null};const discussionTTS={pause(){}};const setIsDiscussionPaused=()=>{};
-window.proactive=null;
+const sceneEpochRef={current:0};const livePauseVersionRef={current:0};const setLectureSpeech=()=>{};const setActiveBubbleId=()=>{};const setEngineMode=()=>{};const lectureSessionIdRef={current:null};const chatAreaRef={current:null};const discussionTTS={pause(){}};const setIsDiscussionPaused=()=>{};
+window.proactive=null;window.joined=false;window.joinedText='';window.joinedActions=0;const pickStudentAgent=()=> 'teacher';const setDiscussionTrigger=trigger=>window.proactive=trigger?.id??null;chatAreaRef.current={pauseActiveLiveBuffer(){window.joinedBuffer?.pause();return !!window.joinedBuffer}};
 let currentSceneId='s';const pauseInteractiveMedia=${sourceFunction(playbackPath, 'pauseInteractiveMedia')};
-const engine=new PlaybackEngine([currentScene],{clearEffects(){},execute(){}},new AudioPlayer(),{beforeSpeech:pauseInteractiveMedia,onModeChange:${sourceFunction(playbackPath, 'onModeChange')},onSpeechStart:${sourceFunction(playbackPath, 'onSpeechStart')},onPlaybackReadyChange:${sourceFunction(playbackPath, 'onPlaybackReadyChange')},onProactiveShow:trigger=>{window.proactive=trigger.id}});const engineRef={current:engine};
-const onMediaPlay=${sourceFunction(playbackPath, 'pauseForInteractiveMedia')};window.mode=()=>engineRef.current.getMode();
+const engine=new PlaybackEngine([currentScene],{clearEffects(){},execute(){}},new AudioPlayer(),{beforeSpeech:pauseInteractiveMedia,onModeChange:${sourceFunction(playbackPath, 'onModeChange')},onSpeechStart:${sourceFunction(playbackPath, 'onSpeechStart')},onPlaybackReadyChange:${sourceFunction(playbackPath, 'onPlaybackReadyChange')},onProactiveShow:${sourceFunction(playbackPath, 'onProactiveShow')},onProactiveHide:${sourceFunction(playbackPath, 'onProactiveHide')},onDiscussionConfirmed:()=>{window.joined=true;const callbacks={onAgentStart(){},onAgentEnd(){},onTextReveal(_id,_part,text){window.joinedText=text},onActionReady(){window.joinedActions++},onLiveSpeech(){},onSpeechProgress(){},onThinking(){},onCueUser(){},onDone(){},onError(message){throw new Error(message)}};const buffer=new StreamBuffer(callbacks,{charsPerTick:100});window.joinedBuffer=buffer;buffer.start();buffer.pushText('join','Joined response');buffer.pushAction({messageId:'join',actionId:'join-action',actionName:'spotlight',params:{},agentId:'teacher'});}});const engineRef={current:engine};
+const onJoin=${sourceFunction(playbackPath, 'onDiscussionStart')};const onMediaPlay=${sourceFunction(playbackPath, 'pauseForInteractiveMedia')};window.mode=()=>engineRef.current.getMode();
 window.cursor=()=>engineRef.current.getSnapshot().actionIndex;window.widgetReady=()=>useWidgetIframeStore.getState().readyByScene.s;window.sendWidget=value=>useWidgetIframeStore.getState().getSendMessage('s')?.('SET_WIDGET_STATE',{value});window.pendingWidgets=()=>useWidgetIframeStore.getState().pendingMessagesByScene.s?.filter(m=>m.type==='SET_WIDGET_STATE').length||0;
 window.prepareDiscussion=()=>currentScene.actions.unshift({id:'delayed',type:'discussion',topic:'Question',prompt:'Discuss'});
 window.skipDiscussion=()=>engineRef.current.skipDiscussion();
@@ -163,7 +171,7 @@ window.prepareLiveLecture=(prepaused=false)=>{
   engineRef.current.handleUserInterrupt('A question');
   window.returnFromLive=async()=>{live.resume();await autoResumeLecture({source:'soft_close_timeout',endReason:'user_done'});lecture.pushText('lecture','Continued lecture text');lecture.pushAction({messageId:'lecture',actionId:'continued',actionName:'spotlight',params:{},agentId:'teacher'});};
 };
-function App(){const [visible,setVisible]=useState(true);window.departForNarration=()=>{engineRef.current.stop();currentSceneId='destination';engineRef.current=new PlaybackEngine([{...currentScene,id:currentSceneId}],{clearEffects(){}},new AudioPlayer(),{beforeSpeech:pauseInteractiveMedia,onSpeechStart:()=>{window.destinationSpeechStarted=true}});setVisible(false);};useLayoutEffect(()=>{if(!visible&&currentSceneId==='destination')engineRef.current.start();},[visible]);return <><button onClick={()=>window.departForNarration()}>Next scene</button><button onClick={()=>engineRef.current.getMode()==='idle'?engineRef.current.start():engineRef.current.resume()}>Narrate</button><button onClick={()=>engineRef.current.continuePlayback()}>Continue lecture</button><button onClick={()=>window.returnFromLive()}>Return from Q&A</button><button onClick={()=>engineRef.current.pause()}>Pause</button><button onClick={()=>{engineRef.current.stop();setVisible(!visible)}}>Navigate</button><PooledIframe onMediaPlay={onMediaPlay} sceneId="s" entry={{${url ? 'src:"http://external.test/activity"' : 'srcDoc:html'},rect:{left:0,top:100,width:1280,height:720},clip:{left:0,top:100,width:1280,height:720},owner:'o'}} visible={visible} playbackArmed={false}/></>}
+function App(){const [visible,setVisible]=useState(true);window.departForNarration=()=>{engineRef.current.stop();currentSceneId='destination';engineRef.current=new PlaybackEngine([{...currentScene,id:currentSceneId}],{clearEffects(){}},new AudioPlayer(),{beforeSpeech:pauseInteractiveMedia,onSpeechStart:()=>{window.destinationSpeechStarted=true}});setVisible(false);};useLayoutEffect(()=>{if(!visible&&currentSceneId==='destination')engineRef.current.start();},[visible]);return <><button onClick={()=>window.departForNarration()}>Next scene</button><button onClick={()=>engineRef.current.getMode()==='idle'?engineRef.current.start():engineRef.current.resume()}>Narrate</button><button onClick={()=>engineRef.current.continuePlayback()}>Continue lecture</button><button onClick={()=>{window.joinPending=Promise.resolve(onJoin())}}>Join discussion</button><button onClick={()=>window.returnFromLive()}>Return from Q&A</button><button onClick={()=>engineRef.current.pause()}>Pause</button><button onClick={()=>{engineRef.current.stop();setVisible(!visible)}}>Navigate</button><PooledIframe onMediaPlay={onMediaPlay} sceneId="s" entry={{${url ? 'src:"http://external.test/activity"' : 'srcDoc:html'},rect:{left:0,top:100,width:1280,height:720},clip:{left:0,top:100,width:1280,height:720},owner:'o'}} visible={visible} playbackArmed={false}/></>}
 `
 }
 window.narrationPaused=()=>window.audios[0]?.paused??true;
@@ -232,10 +240,14 @@ async function nativeSynthesisStarts(page: Page): Promise<boolean> {
   }
 }
 
-async function adjacentAutoplayStarts(page: Page, tag: string): Promise<boolean> {
+async function adjacentAutoplayStarts(
+  page: Page,
+  tag: string,
+  method: 'insertAdjacentHTML' | 'outerHTML' = 'insertAdjacentHTML',
+): Promise<boolean> {
   const control = await page.context().newPage();
   try {
-    const html = `<button id="start">Start</button><script>document.querySelector('button').onclick=()=>{const container=document.createElement('div');container.insertAdjacentHTML('beforeend','<${tag}></${tag}>');window.parserMedia=container.firstChild;parserMedia.playsInline=true;parserMedia.autoplay=true;parserMedia.src=${JSON.stringify(audio)}};</script>`;
+    const html = `<button id="start">Start</button><script>document.querySelector('button').onclick=()=>{const container=document.createElement('div');${method === 'outerHTML' ? `container.append(document.createElement('span'));container.firstChild.outerHTML='<${tag}></${tag}>';` : `container.insertAdjacentHTML('beforeend','<${tag}></${tag}>');`}window.parserMedia=container.firstChild;parserMedia.playsInline=true;parserMedia.autoplay=true;parserMedia.src=${JSON.stringify(audio)}};</script>`;
     await control.route('http://localhost/parser-control', (route) =>
       route.fulfill({
         contentType: 'text/html',
@@ -1168,6 +1180,50 @@ for (const surface of ['app', 'standalone'] as const) {
         expect(await page.evaluate('cursor()')).toBe(2);
       });
 
+      for (const blocked of [false, true]) {
+        test(`waits for iframe silence before joining a visible proactive discussion (blocked=${blocked})`, async ({
+          page,
+        }) => {
+          await finishFrameLoad(page);
+          await page.evaluate('prepareDiscussion()');
+          await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+          await expect.poll(() => page.evaluate('window.proactive')).toBe('delayed');
+          if (blocked) await startUnresponsiveFrame(page);
+          else await page.frameLocator('iframe').locator('#audio').click();
+          await expect
+            .poll(() => page.frames()[1].evaluate('!document.querySelector("audio").paused'))
+            .toBe(true);
+          await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+          await page.getByRole('button', { name: 'Join discussion', exact: true }).click();
+          await page.evaluate('window.joinPending');
+          if (blocked) {
+            if (await page.evaluate('window.joined'))
+              await expect.poll(() => page.evaluate('window.joinedActions')).toBe(1);
+            console.log(
+              'Proactive Join state',
+              await page.evaluate(
+                '({mode:mode(),joined:window.joined,text:window.joinedText,actions:window.joinedActions})',
+              ),
+            );
+            expect(await page.evaluate('window.joined')).toBe(false);
+            expect(await page.evaluate('window.joinedText')).toBe('');
+            expect(await page.evaluate('window.joinedActions')).toBe(0);
+            expect(await page.frames()[1].evaluate('document.querySelector("audio").paused')).toBe(
+              false,
+            );
+            await page.frames()[1].evaluate('window.blockMediaControls=false');
+            await page.getByRole('button', { name: 'Join discussion', exact: true }).click();
+            await page.evaluate('window.joinPending');
+          }
+          expect(await page.frames()[1].evaluate('document.querySelector("audio").paused')).toBe(
+            true,
+          );
+          await expect.poll(() => page.evaluate('window.joinedText')).toBe('Joined response');
+          await expect.poll(() => page.evaluate('window.joinedActions')).toBe(1);
+          expect(await page.evaluate('mode()')).toBe('live');
+        });
+      }
+
       test('retains a delayed discussion when frame media pauses the engine', async ({ page }) => {
         await page.evaluate('prepareDiscussion()');
         await page.getByRole('button', { name: 'Narrate', exact: true }).click();
@@ -1287,6 +1343,7 @@ for (const surface of ['app', 'standalone'] as const) {
       'createElementNS-video',
       ...[
         'insertAdjacentHTML',
+        'outerHTML',
         'parser-first',
         'parser',
         'cloneNode',
@@ -1296,6 +1353,17 @@ for (const surface of ['app', 'standalone'] as const) {
       ].flatMap((method) => ['audio', 'video'].map((tag) => `${method}-${tag}`)),
     ]) {
       test(`coordinates detached ${creation} playback and reuse`, async ({ page, browserName }) => {
+        if (creation.startsWith('outerHTML')) {
+          const starts = await adjacentAutoplayStarts(
+            page,
+            creation.endsWith('video') ? 'video' : 'audio',
+            'outerHTML',
+          );
+          test.skip(
+            !starts,
+            'Detached outerHTML media does not start in the same-engine no-bridge native control.',
+          );
+        }
         if (creation.startsWith('insertAdjacentHTML') && browserName === 'chromium') {
           const starts = await adjacentAutoplayStarts(
             page,

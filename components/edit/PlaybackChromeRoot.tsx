@@ -896,6 +896,7 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
             }
           },
           onProactiveShow: (trigger) => {
+            livePauseVersionRef.current++;
             if (!trigger.agentId) {
               // Mutate in-place so engine.currentTrigger also gets the agentId
               // (confirmDiscussion reads agentId from the same object reference)
@@ -904,6 +905,7 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
             setDiscussionTrigger(trigger);
           },
           onProactiveHide: () => {
+            livePauseVersionRef.current++;
             setDiscussionTrigger(null);
           },
           onDiscussionConfirmed: (topic, prompt, agentId) => {
@@ -1935,9 +1937,18 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
                     setIsDiscussionPaused(false);
                   }
                 }}
-                onDiscussionStart={() => {
-                  // User clicks "Join" on ProactiveCard
-                  engineRef.current?.confirmDiscussion();
+                onDiscussionStart={async () => {
+                  const engine = engineRef.current;
+                  if (!engine) return;
+                  const resumeVersion = ++livePauseVersionRef.current;
+                  const sceneEpoch = sceneEpochRef.current;
+                  if (!(await pauseInteractiveMedia().catch(() => false))) return;
+                  if (
+                    resumeVersion === livePauseVersionRef.current &&
+                    sceneEpoch === sceneEpochRef.current &&
+                    engineRef.current === engine
+                  )
+                    engine.confirmDiscussion();
                 }}
                 onDiscussionSkip={() => {
                   // User clicks "Skip" on ProactiveCard
