@@ -1722,7 +1722,6 @@
     "videoModel": "Modelo de Geração de Vídeos",
     "providerSeedance": "Seedance (ByteDance)",
     "providerKling": "Kling (Kuaishou)",
-    "providerVeo": "Veo (Google)",
     "providerSora": "Sora (OpenAI)",
     "providerMiniMaxVideo": "MiniMax Video",
     "providerGrokVideo": "Grok Video (xAI)",
