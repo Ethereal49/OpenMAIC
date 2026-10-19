@@ -545,6 +545,69 @@ for (const surface of ['app', 'standalone'] as const) {
       await expect(page.frameLocator('iframe').locator('#audio')).toBeVisible();
     });
 
+    test('blocks auxiliary media windows outside the narration handshake', async ({ page }) => {
+      await page.context().route('http://localhost/popup-media', (route) =>
+        route.fulfill({
+          contentType: 'text/html',
+          body: '<button onclick="window.ctx=new AudioContext();const o=ctx.createOscillator();o.connect(ctx.destination);o.start();ctx.resume()">Popup audio</button>',
+        }),
+      );
+      let popup: Page | undefined;
+      const opened = (child: Page) => {
+        popup = child;
+      };
+      page.on('popup', opened);
+      try {
+        await finishFrameLoad(page);
+        await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+        await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
+        await page.frames()[1].evaluate(() => {
+          const button = document.createElement('button');
+          button.id = 'open-popup';
+          button.textContent = 'Open popup';
+          button.onclick = (event) => {
+            Object.assign(window, { popupGesture: event.isTrusted });
+            try {
+              Object.assign(window, {
+                popupBlocked: window.open('http://localhost/popup-media', '_blank') === null,
+              });
+            } catch (error) {
+              if (
+                !(error instanceof DOMException) ||
+                !['SecurityError', 'InvalidAccessError'].includes(error.name)
+              )
+                throw error;
+              Object.assign(window, { popupBlocked: true, popupException: error.name });
+            }
+          };
+          document.body.append(button);
+        });
+        await page.frameLocator('iframe').locator('#open-popup').press('Enter');
+        const blocked = await page.frames()[1].evaluate('window.popupBlocked');
+        expect(await page.frames()[1].evaluate('window.popupGesture')).toBe(true);
+        await test.info().attach('popup-result', {
+          body: JSON.stringify(
+            await page
+              .frames()[1]
+              .evaluate('({blocked:window.popupBlocked,exception:window.popupException})'),
+          ),
+          contentType: 'application/json',
+        });
+        if (!blocked) {
+          await expect.poll(() => !!popup).toBe(true);
+          await popup!.getByRole('button', { name: 'Popup audio' }).press('Enter');
+          await expect.poll(() => popup!.evaluate('ctx.state')).toBe('running');
+          await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
+        }
+        expect(blocked).toBe(true);
+        expect(popup).toBeUndefined();
+        await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
+      } finally {
+        page.off('popup', opened);
+        await popup?.close();
+      }
+    });
+
     for (const settings of [
       { method: 'setHTMLUnsafe', mode: 'open', kind: 'audio' },
       { method: 'setHTMLUnsafe', mode: 'closed', kind: 'audio' },

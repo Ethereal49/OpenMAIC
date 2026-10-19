@@ -74,8 +74,9 @@ export const STANDALONE_CHARTS_GLOBAL = '__OPENMAIC_CHARTS__';
 /**
  * Sandbox flags for interactive scenes. Must stay identical to the classroom's
  * `InteractiveIframeHost`: scripts run, but never in the player's origin.
+ * Popups are blocked: auxiliary windows outlive the iframe and its media handshake.
  */
-export const STANDALONE_INTERACTIVE_SANDBOX = 'allow-scripts allow-forms allow-popups';
+export const STANDALONE_INTERACTIVE_SANDBOX = 'allow-scripts allow-forms';
 
 /** Every UI string the player shows, resolved from the app locale at export time. */
 export const STANDALONE_PLAYER_STRING_KEYS = [

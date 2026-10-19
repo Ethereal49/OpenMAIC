@@ -409,6 +409,10 @@ describe('standalone HTML export', () => {
     );
     expect(host).toContain(`sandbox="${STANDALONE_INTERACTIVE_SANDBOX}"`);
     expect(STANDALONE_INTERACTIVE_SANDBOX).not.toContain('allow-same-origin');
+    expect(STANDALONE_INTERACTIVE_SANDBOX.split(/\s+/)).not.toContain('allow-popups');
+    expect(STANDALONE_INTERACTIVE_SANDBOX.split(/\s+/)).not.toContain(
+      'allow-popups-to-escape-sandbox',
+    );
   });
 
   it('links PBL scenes to the online classroom only when a URL is given', async () => {

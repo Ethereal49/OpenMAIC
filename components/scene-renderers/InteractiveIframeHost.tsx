@@ -537,7 +537,7 @@ function PooledIframe({
           src={entry.srcDoc ? undefined : entry.src}
           style={iframeStyle}
           title={`Interactive Scene ${sceneId}`}
-          sandbox="allow-scripts allow-forms allow-popups"
+          sandbox="allow-scripts allow-forms"
         />
       )}
       {showRuntimeError && latestRuntimeError ? (

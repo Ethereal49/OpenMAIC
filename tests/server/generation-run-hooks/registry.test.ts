@@ -298,11 +298,13 @@ describe('reportGenerationRunEvent', () => {
       throw new Error('the database is gone');
     });
     await settle();
-    expect(seen).toEqual([
-      { runId: 'run-1', ownerId: 'anon:stored', currentOwnerId: 'account' },
-      // Unresolvable: the stored owner.
-      { runId: 'run-2', ownerId: 'anon:stored', currentOwnerId: 'anon:stored' },
-    ]);
+    await vi.waitFor(() =>
+      expect(seen).toEqual([
+        { runId: 'run-1', ownerId: 'anon:stored', currentOwnerId: 'account' },
+        // Unresolvable: the stored owner.
+        { runId: 'run-2', ownerId: 'anon:stored', currentOwnerId: 'anon:stored' },
+      ]),
+    );
   });
 
   it('reports the stored owner when the lookup stalls, and goes on with the next', async () => {
