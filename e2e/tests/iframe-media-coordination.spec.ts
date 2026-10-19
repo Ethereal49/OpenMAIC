@@ -863,6 +863,127 @@ for (const surface of ['app', 'standalone'] as const) {
       });
     }
 
+    for (const tag of ['object', 'embed'] as const)
+      for (const kind of ['html', 'audio'] as const)
+        test(`guards opaque ${tag} ${kind} with an unload before narration resumes`, async ({
+          page,
+        }) => {
+          const url = `http://external.test/opaque-${tag}-${kind}`;
+          await page.context().route(url, (route) =>
+            route.fulfill(
+              kind === 'html'
+                ? {
+                    contentType: 'text/html',
+                    body: '<button onclick="window.ctx=new AudioContext();const o=ctx.createOscillator();o.connect(ctx.destination);o.start();ctx.resume()">Embedded audio</button>',
+                  }
+                : { contentType: 'audio/wav', body: Buffer.from(audio.split(',')[1], 'base64') },
+            ),
+          );
+          // Calibrate native resource support without the bridge in this same engine/sandbox.
+          const control = await page.context().newPage();
+          let supported = false;
+          try {
+            await control.setContent(
+              `<iframe sandbox="allow-scripts allow-forms" srcdoc="${escapeAttribute(`<${tag} type="${kind === 'html' ? 'text/html' : 'audio/wav'}" ${tag === 'object' ? 'data' : 'src'}="${url}"></${tag}>`)}"></iframe>`,
+            );
+            const deadline = Date.now() + 2000;
+            while (Date.now() < deadline) {
+              const child = control.frames().find((frame) => frame.url() === url);
+              if (child) {
+                supported = kind === 'html' || (await child.locator('audio,video').count()) === 1;
+                if (supported) break;
+              }
+              await control.waitForTimeout(50);
+            }
+          } finally {
+            await control.close();
+          }
+          test.skip(!supported, 'The native no-bridge control cannot embed this resource.');
+          await finishFrameLoad(page);
+          const outer = page.frames()[1];
+          const mount = () =>
+            outer.evaluate(
+              ({ tag, kind, url }) => {
+                const embedded = document.createElement(tag);
+                embedded.id = 'opaque-media';
+                embedded.title = 'Opaque media';
+                embedded.setAttribute('type', kind === 'html' ? 'text/html' : 'audio/wav');
+                embedded.setAttribute(tag === 'object' ? 'data' : 'src', url);
+                document.body.append(embedded);
+                const image = document.createElement('img');
+                image.id = 'ordinary-image';
+                image.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"/>';
+                document.body.append(image);
+              },
+              { tag, kind, url },
+            );
+          const start = async () => {
+            await expect.poll(() => page.frames().some((frame) => frame.url() === url)).toBe(true);
+            const child = page.frames().find((frame) => frame.url() === url)!;
+            if (kind === 'html') {
+              await child.getByRole('button', { name: 'Embedded audio' }).press('Enter');
+              await expect.poll(() => child.evaluate('window.ctx?.state')).toBe('running');
+            } else {
+              await child.evaluate(() => {
+                const button = document.createElement('button');
+                button.textContent = 'Native player';
+                button.onclick = () =>
+                  void document.querySelector<HTMLMediaElement>('audio,video')!.play();
+                document.body.append(button);
+              });
+              await child.getByRole('button', { name: 'Native player' }).press('Enter');
+              await expect
+                .poll(() =>
+                  child.evaluate(
+                    '!document.querySelector("audio,video").paused && document.querySelector("audio,video").currentTime > 0',
+                  ),
+                )
+                .toBe(true);
+            }
+            return child;
+          };
+          await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+          await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
+          await mount();
+          const open = page
+            .frameLocator('iframe')
+            .getByRole('button', { name: /Opaque media.*open/ });
+          await outer.evaluate(() => new Promise((resolve) => setTimeout(resolve, 50)));
+          if (!(await open.count())) {
+            await start();
+            await test.info().attach('uncoordinated-embedded-media', {
+              body: JSON.stringify({
+                tag,
+                kind,
+                embeddedPlaying: true,
+                narrationPlaying: await page.locator('body').getAttribute('data-narration-playing'),
+              }),
+              contentType: 'application/json',
+            });
+          }
+          await expect(open).toBeVisible();
+          await expect(page.frameLocator('iframe').locator('img#ordinary-image')).toHaveCount(1);
+          await open.click();
+          const child = await start();
+          await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'false');
+          await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+          await expect(open).toBeVisible();
+          expect(child.isDetached()).toBe(true);
+          await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
+          await open.click();
+          await expect.poll(() => page.frames().some((frame) => frame.url() === url)).toBe(true);
+          const reloaded = page.frames().find((frame) => frame.url() === url)!;
+          if (kind === 'html')
+            expect(await reloaded.evaluate('typeof window.ctx')).toBe('undefined');
+          else
+            expect(
+              await reloaded
+                .locator('audio,video')
+                .evaluate((element) => (element as HTMLMediaElement).paused),
+            ).toBe(true);
+          await expect(page.frameLocator('iframe').locator('img#ordinary-image')).toHaveCount(1);
+        });
+
     test('guards URL child media with an unload before narration resumes', async ({ page }) => {
       await page.route('http://external.test/nested', (route) =>
         route.fulfill({

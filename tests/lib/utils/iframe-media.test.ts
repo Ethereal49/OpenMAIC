@@ -212,7 +212,7 @@ function bridgeFixture(unobservable = false, documentId = 'test', globals = {}) 
       if (this.parentNode) this.parentNode.elements = [new Media()];
     }
     querySelectorAll(selector?: string) {
-      if (selector === 'iframe') return this.frames;
+      if (selector === 'iframe,object,embed') return this.frames;
       if (selector === '*') return this.hosts;
       return this.elements;
     }

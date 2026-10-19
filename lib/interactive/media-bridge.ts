@@ -78,7 +78,7 @@ const MEDIA_BRIDGE = String.raw`(function (documentId, unobservable) {
   function scanChildren() {
     var frames = new Set();
     function scan(root) {
-      root.querySelectorAll('iframe').forEach(function (frame) { frames.add(frame); });
+      root.querySelectorAll('iframe,object,embed').forEach(function (frame) { frames.add(frame); });
       root.querySelectorAll('*').forEach(function (element) {
         var shadow = element.shadowRoot || shadowRoots.get(element);
         if (shadow) scan(observeRoot(shadow));
@@ -103,7 +103,9 @@ const MEDIA_BRIDGE = String.raw`(function (documentId, unobservable) {
       }
     });
     frames.forEach(function (frame) {
-      if (children.has(frame) || uninstrumented.has(frame) || !frame.contentWindow) return;
+      if (children.has(frame) || uninstrumented.has(frame)) return;
+      if (frame.localName === 'object' || frame.localName === 'embed') { guardUninstrumented(frame); return; }
+      if (!frame.contentWindow) return;
       var id = childDocumentId(frame);
       if (!id) { guardUninstrumented(frame); return; }
       var child = { frame: frame, id: id, generation: ++childGeneration, playing: false, pending: null };
