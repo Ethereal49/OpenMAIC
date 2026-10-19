@@ -255,6 +255,18 @@ function bridgeFixture(unobservable = false, documentId = 'test', globals = {}) 
     }
   }
   class FrameDocument extends FrameNode {
+    static parseHTML(html: unknown) {
+      if (String(html) === 'invalid') throw new TypeError('invalid HTML');
+      const root = new FrameElement();
+      root.elements = [new Media()];
+      return root;
+    }
+    static parseHTMLUnsafe(html: unknown) {
+      if (String(html) === 'invalid') throw new TypeError('invalid HTML');
+      const root = new FrameElement();
+      root.elements = [new Media()];
+      return root;
+    }
     importNode(node: FrameNode) {
       return node.cloneNode();
     }
@@ -348,6 +360,7 @@ function bridgeFixture(unobservable = false, documentId = 'test', globals = {}) 
     },
     Parser,
     FrameRange,
+    FrameDocument,
     frameDocument,
     observedRoots,
     added: (...elements: EventTarget[]) =>
@@ -536,6 +549,24 @@ describe('injected media lifetime', () => {
       '*',
     );
   });
+  it.each(['parseHTMLUnsafe', 'parseHTML'] as const)(
+    'refuses silence after Document.%s returns a closed-root document',
+    async (method) => {
+      const { FrameDocument, FrameElement, frameWindow, control } = bridgeFixture();
+      const result = FrameDocument[method](
+        '<div><template shadowrootmode="closed"><audio autoplay></audio></template></div>',
+      );
+      expect(result).toBeInstanceOf(FrameElement);
+      expect(() => FrameDocument[method]('invalid')).toThrow('invalid HTML');
+      control({ action: 'pause', requestId: 93 });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ requestId: 93, playing: true }),
+        '*',
+      );
+    },
+  );
   it('registers native declarative roots through a self-removing marker', () => {
     const { FrameElement, FrameShadowRoot, frameDocument, definitions, observedRoots, control } =
       bridgeFixture();

@@ -273,6 +273,7 @@ const MEDIA_BRIDGE = String.raw`(function (documentId, unobservable) {
     return seeds;
   }
   [[Node.prototype, 'cloneNode'], [Document.prototype, 'importNode'],
+    [Document, 'parseHTMLUnsafe'], [Document, 'parseHTML'],
     [typeof DOMParser === 'undefined' ? {} : DOMParser.prototype, 'parseFromString'],
     [typeof Range === 'undefined' ? {} : Range.prototype, 'createContextualFragment'],
     [typeof Range === 'undefined' ? {} : Range.prototype, 'cloneContents']
@@ -282,11 +283,13 @@ const MEDIA_BRIDGE = String.raw`(function (documentId, unobservable) {
       apply: function (target, receiver, args) {
         var rangeClone = entry[1] === 'cloneContents';
         var cloning = rangeClone || entry[1] === 'cloneNode' || entry[1] === 'importNode';
+        var parsing = entry[0] === Document;
         var source = rangeClone ? (receiver instanceof Range ? receiver.commonAncestorContainer : null) : entry[1] === 'cloneNode' ? receiver : args[0];
         var seeds = cloning && !(entry[1] === 'importNode' && source instanceof Document) ? prepareClone(source) : [];
         try {
           var result = observe(Reflect.apply(target, receiver, args));
-          if (cloning) visitShadowRoots(result, observeRoot);
+          if (cloning || parsing) visitShadowRoots(result, observeRoot);
+          if (parsing) guardParsedRoots(args[0], entry[1] === 'parseHTML');
           return result;
         } finally {
           seeds.forEach(function (marker) { marker.remove(); cloneSeeds.delete(marker); });
@@ -320,6 +323,13 @@ const MEDIA_BRIDGE = String.raw`(function (documentId, unobservable) {
       return false;
     } catch (_) { return true; }
   }
+  function guardParsedRoots(input, safe) {
+    // shortcut: unverifiable parser input refuses silence until the document reloads.
+    if (!unobservable && mayHideParsedRoot(input, safe)) {
+      unobservable = true;
+      changed();
+    }
+  }
   [typeof Element === 'undefined' ? {} : Element.prototype,
     typeof ShadowRoot === 'undefined' ? {} : ShadowRoot.prototype
   ].forEach(function (prototype) {
@@ -330,11 +340,7 @@ const MEDIA_BRIDGE = String.raw`(function (documentId, unobservable) {
           var result = Reflect.apply(target, receiver, args);
           observe(receiver);
           visitShadowRoots(receiver, observeRoot);
-          // shortcut: inaccessible dynamic roots refuse silence until the document reloads.
-          if (!unobservable && mayHideParsedRoot(args[0], name === 'setHTML')) {
-            unobservable = true;
-            changed();
-          }
+          guardParsedRoots(args[0], name === 'setHTML');
           return result;
         }
       });

@@ -214,7 +214,7 @@ async function finishNarration(page: Page) {
 }
 
 type ParsedRootCase = {
-  method: 'setHTMLUnsafe' | 'setHTML';
+  method: 'setHTMLUnsafe' | 'setHTML' | 'parseHTMLUnsafe' | 'parseHTML';
   mode: 'open' | 'closed';
   kind: 'audio' | 'iframe';
   input?: 'default-policy' | 'trusted' | 'coercion';
@@ -226,8 +226,9 @@ async function makeParsedRoot(page: Page, settings: ParsedRootCase) {
       : '<audio autoplay loop></audio>';
   return page.frames()[1].evaluate(`(function(settings,content,src){
     const host=document.createElement('section');document.body.append(host);
-    if(typeof host[settings.method]!=='function'||(settings.input&&settings.input!=='coercion'&&!window.trustedTypes))return {supported:false};
-    window.parserConstructors=0;window.parserCoercions=0;window.parserPolicies=0;window.parserViolations=0;
+    const parser=settings.method.startsWith('parseHTML')?Document:host;
+    if(typeof parser[settings.method]!=='function'||(settings.input&&settings.input!=='coercion'&&!window.trustedTypes))return {supported:false};
+    window.parserConstructors=0;window.parserCoercions=0;window.parserPolicies=0;window.parserViolations=0;window.parserClicks=0;window.parserEvents=[];
     document.addEventListener('securitypolicyviolation',()=>parserViolations++);
     customElements.define('dynamic-root-probe',class extends HTMLElement{constructor(){super();parserConstructors++}connectedCallback(){window.parsedRoot=this.getRootNode()}});
     const markup='<div><template shadowrootmode="'+settings.mode+'"><dynamic-root-probe hidden></dynamic-root-probe>'+content+'</template></div>';
@@ -239,9 +240,11 @@ async function makeParsedRoot(page: Page, settings: ParsedRootCase) {
       input=trustedTypes.createPolicy('parser-test',{createHTML(value){parserPolicies++;return value}}).createHTML(markup);
       TrustedHTML.prototype.toString=function(){parserCoercions++;return markup};
     }else if(settings.input==='coercion')input={toString(){parserCoercions++;return markup}};
-    const options=settings.method==='setHTML'?{sanitizer:{elements:['div','template','dynamic-root-probe','audio'],attributes:['shadowrootmode','hidden','autoplay','loop']}}:undefined;
-    const result=host[settings.method](input,options);
-    const button=document.createElement('button');button.id='start-parsed';button.textContent='Start parsed media';button.onclick=()=>{parsedRoot.querySelector('audio').src=src};document.body.append(button);
+    const options=settings.method==='setHTML'||settings.method==='parseHTML'?{sanitizer:{elements:['html','head','body','div','template','dynamic-root-probe','audio'],attributes:['shadowrootmode','hidden','autoplay','loop']}}:undefined;
+    const result=parser[settings.method](input,options);
+    if(parser===Document)host.append(...result.body.childNodes);
+    const media=window.parsedRoot?.querySelector('audio');if(media)['play','playing','pause','error','canplay'].forEach(type=>media.addEventListener(type,()=>parserEvents.push(type)));
+    const button=document.createElement('button');button.id='start-parsed';button.textContent='Start parsed media';button.onclick=event=>{parserClicks++;window.parserGesture={trusted:event.isTrusted,active:navigator.userActivation?.isActive};parsedRoot.querySelector('audio').src=src};document.body.append(button);
     return {supported:true,captured:!!window.parsedRoot,mode:window.parsedRoot?.mode,closed:!host.firstChild?.shadowRoot,result:typeof result,constructors:parserConstructors,coercions:parserCoercions,policies:parserPolicies};
   })(${JSON.stringify(settings)},${JSON.stringify(content)},${JSON.stringify(audio)})`);
 }
@@ -253,19 +256,35 @@ async function parsedChild(page: Page) {
   return (await element.contentFrame())!;
 }
 async function startParsedMedia(page: Page, kind: ParsedRootCase['kind']) {
-  if (kind === 'audio') await page.frameLocator('iframe').locator('#start-parsed').click();
-  else await (await parsedChild(page)).getByRole('button', { name: 'Nested context' }).click();
-  await expect
-    .poll(() =>
-      kind === 'audio'
-        ? page
-            .frames()[1]
-            .evaluate(
-              '!parsedRoot.querySelector("audio").paused && parsedRoot.querySelector("audio").currentTime > 0',
-            )
-        : parsedChild(page).then((child) => child.evaluate('ctx.state === "running"')),
-    )
-    .toBe(true);
+  if (kind === 'audio') {
+    await page.frameLocator('iframe').locator('#start-parsed').press('Enter');
+    expect(await page.frames()[1].evaluate('parserClicks')).toBe(1);
+    expect(await page.frames()[1].evaluate('parserGesture.trusted')).toBe(true);
+  } else await (await parsedChild(page)).getByRole('button', { name: 'Nested context' }).click();
+  try {
+    await expect
+      .poll(() =>
+        kind === 'audio'
+          ? page
+              .frames()[1]
+              .evaluate(
+                '!parsedRoot.querySelector("audio").paused && parsedRoot.querySelector("audio").currentTime > 0',
+              )
+          : parsedChild(page).then((child) => child.evaluate('ctx.state === "running"')),
+      )
+      .toBe(true);
+  } catch (error) {
+    const state = await page
+      .frames()[1]
+      .evaluate(
+        `(()=>{const media=window.parsedRoot?.querySelector('audio');return {clicks:window.parserClicks,gesture:window.parserGesture,events:window.parserEvents,media:media&&{paused:media.paused,time:media.currentTime,ready:media.readyState,network:media.networkState,source:!!media.getAttribute('src'),error:media.error?.code}}})()`,
+      );
+    await test.info().attach('native-parser-start', {
+      body: JSON.stringify(state),
+      contentType: 'application/json',
+    });
+    throw error;
+  }
 }
 async function parsedRootControl(page: Page, settings: ParsedRootCase) {
   const native = await page.context().newPage();
@@ -535,6 +554,12 @@ for (const surface of ['app', 'standalone'] as const) {
       { method: 'setHTMLUnsafe', mode: 'open', kind: 'audio', input: 'trusted' },
       { method: 'setHTMLUnsafe', mode: 'closed', kind: 'audio', input: 'trusted' },
       { method: 'setHTMLUnsafe', mode: 'closed', kind: 'audio', input: 'coercion' },
+      { method: 'parseHTMLUnsafe', mode: 'open', kind: 'audio' },
+      { method: 'parseHTMLUnsafe', mode: 'closed', kind: 'audio' },
+      { method: 'parseHTMLUnsafe', mode: 'closed', kind: 'iframe' },
+      { method: 'parseHTML', mode: 'closed', kind: 'audio' },
+      { method: 'parseHTMLUnsafe', mode: 'closed', kind: 'audio', input: 'default-policy' },
+      { method: 'parseHTMLUnsafe', mode: 'open', kind: 'audio', input: 'trusted' },
     ] as const satisfies readonly ParsedRootCase[]) {
       test(`coordinates dynamic declarative ${settings.method} ${settings.mode} ${settings.kind} ${'input' in settings ? settings.input : 'string'}`, async ({
         page,
@@ -559,15 +584,17 @@ for (const surface of ['app', 'standalone'] as const) {
           await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'false');
           await expect.poll(() => page.evaluate('narrationPaused()')).toBe(true);
           // Only a document reload can prove an inaccessible root and detached media are gone.
-          const frame = page.frames()[1];
-          const navigation = page.waitForEvent(
-            'framenavigated',
-            (candidate) => candidate === frame,
-          );
+          await page.frames()[1].evaluate('document.body.dataset.parsedReload = "pending"');
           await page.locator('iframe').evaluate((element: HTMLIFrameElement) => {
             element.srcdoc = element.srcdoc;
           });
-          await navigation;
+          await expect(page.frameLocator('iframe').locator('body')).not.toHaveAttribute(
+            'data-parsed-reload',
+            'pending',
+          );
+          await expect
+            .poll(() => page.frames()[1].evaluate('typeof window.parsedRoot'))
+            .toBe('undefined');
           await expect(page.frameLocator('iframe').locator('#audio')).toBeVisible();
           await finishFrameLoad(page);
           await page.getByRole('button', { name: 'Narrate', exact: true }).click();
