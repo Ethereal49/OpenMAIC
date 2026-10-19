@@ -265,13 +265,15 @@ const MEDIA_BRIDGE = String.raw`(function (documentId, unobservable) {
   }
   [[Node.prototype, 'cloneNode'], [Document.prototype, 'importNode'],
     [typeof DOMParser === 'undefined' ? {} : DOMParser.prototype, 'parseFromString'],
-    [typeof Range === 'undefined' ? {} : Range.prototype, 'createContextualFragment']
+    [typeof Range === 'undefined' ? {} : Range.prototype, 'createContextualFragment'],
+    [typeof Range === 'undefined' ? {} : Range.prototype, 'cloneContents']
   ].forEach(function (entry) {
     var native = entry[0][entry[1]];
     if (native) entry[0][entry[1]] = new Proxy(native, {
       apply: function (target, receiver, args) {
-        var cloning = entry[1] === 'cloneNode' || entry[1] === 'importNode';
-        var source = entry[1] === 'cloneNode' ? receiver : args[0];
+        var rangeClone = entry[1] === 'cloneContents';
+        var cloning = rangeClone || entry[1] === 'cloneNode' || entry[1] === 'importNode';
+        var source = rangeClone ? (receiver instanceof Range ? receiver.commonAncestorContainer : null) : entry[1] === 'cloneNode' ? receiver : args[0];
         var seeds = cloning && !(entry[1] === 'importNode' && source instanceof Document) ? prepareClone(source) : [];
         try {
           var result = observe(Reflect.apply(target, receiver, args));
@@ -286,6 +288,15 @@ const MEDIA_BRIDGE = String.raw`(function (documentId, unobservable) {
   [typeof Element === 'undefined' ? {} : Element.prototype,
     typeof ShadowRoot === 'undefined' ? {} : ShadowRoot.prototype
   ].forEach(function (prototype) {
+    var setHTMLUnsafe = prototype.setHTMLUnsafe;
+    if (setHTMLUnsafe) prototype.setHTMLUnsafe = new Proxy(setHTMLUnsafe, {
+      apply: function (target, receiver, args) {
+        var result = Reflect.apply(target, receiver, args);
+        observe(receiver);
+        visitShadowRoots(receiver, observeRoot);
+        return result;
+      }
+    });
     ['innerHTML', 'outerHTML'].forEach(function (name) {
       var descriptor = Object.getOwnPropertyDescriptor(prototype, name);
       if (descriptor && descriptor.set) Object.defineProperty(prototype, name, Object.assign({}, descriptor, {

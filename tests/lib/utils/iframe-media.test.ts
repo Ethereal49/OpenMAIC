@@ -196,6 +196,10 @@ function bridgeFixture(unobservable = false, documentId = 'test') {
       this.html = html;
       this.elements = [new Media()];
     }
+    setHTMLUnsafe(html: string, _options?: unknown) {
+      if (html === 'invalid') throw new TypeError('invalid HTML');
+      this.elements = [new Media()];
+    }
     get outerHTML() {
       return this.html;
     }
@@ -233,6 +237,14 @@ function bridgeFixture(unobservable = false, documentId = 'test') {
   };
   class Parser {
     parseFromString() {
+      const root = new FrameElement();
+      root.elements = [new Media()];
+      return root;
+    }
+  }
+  class FrameRange {
+    commonAncestorContainer = new FrameElement();
+    cloneContents() {
       const root = new FrameElement();
       root.elements = [new Media()];
       return root;
@@ -297,6 +309,7 @@ function bridgeFixture(unobservable = false, documentId = 'test') {
     ShadowRoot: FrameShadowRoot,
     customElements,
     DOMParser: Parser,
+    Range: FrameRange,
     MutationObserver: Observer,
     Set: TrackedSet,
     setTimeout,
@@ -328,6 +341,7 @@ function bridgeFixture(unobservable = false, documentId = 'test') {
       }
     },
     Parser,
+    FrameRange,
     frameDocument,
     observedRoots,
     added: (...elements: EventTarget[]) =>
@@ -942,17 +956,26 @@ describe('injected media lifetime', () => {
     expect(mediaDocumentId(grandchild)).toBeTruthy();
     expect(grandchild).toContain(leaf);
   });
-  it.each(['DOMParser', 'innerHTML'])(
+  it.each(['DOMParser', 'innerHTML', 'setHTMLUnsafe', 'cloneContents'])(
     'observes detached parser media from %s without explicit play',
     (factory) => {
-      const { FrameElement, Parser, media, frameWindow, control } = bridgeFixture();
-      const root = factory === 'DOMParser' ? new Parser().parseFromString() : new FrameElement();
+      const { FrameElement, Parser, FrameRange, media, frameWindow, control } = bridgeFixture();
+      const root =
+        factory === 'DOMParser'
+          ? new Parser().parseFromString()
+          : factory === 'cloneContents'
+            ? new FrameRange().cloneContents()
+            : new FrameElement();
       if (factory === 'innerHTML') {
         root.innerHTML = '<audio></audio>';
         expect(root.innerHTML).toBe('<audio></audio>');
         expect(() => {
           root.innerHTML = 'invalid';
         }).toThrow('invalid HTML');
+      }
+      if (factory === 'setHTMLUnsafe') {
+        expect(root.setHTMLUnsafe('<audio></audio>', {})).toBeUndefined();
+        expect(() => root.setHTMLUnsafe('invalid')).toThrow('invalid HTML');
       }
       expect(media.size).toBe(0);
       const element = root.elements[0];
