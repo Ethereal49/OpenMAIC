@@ -213,6 +213,75 @@ async function finishNarration(page: Page) {
   await page.evaluate('audios[0].pause(); audios[0].dispatchEvent(new Event("ended"))');
 }
 
+type ParsedRootCase = {
+  method: 'setHTMLUnsafe' | 'setHTML';
+  mode: 'open' | 'closed';
+  kind: 'audio' | 'iframe';
+  input?: 'default-policy' | 'trusted' | 'coercion';
+};
+async function makeParsedRoot(page: Page, settings: ParsedRootCase) {
+  const content =
+    settings.kind === 'iframe'
+      ? `<iframe sandbox="allow-scripts" srcdoc="${escapeAttribute(nestedMedia)}"></iframe>`
+      : '<audio autoplay loop></audio>';
+  return page.frames()[1].evaluate(`(function(settings,content,src){
+    const host=document.createElement('section');document.body.append(host);
+    if(typeof host[settings.method]!=='function'||(settings.input&&settings.input!=='coercion'&&!window.trustedTypes))return {supported:false};
+    window.parserConstructors=0;window.parserCoercions=0;window.parserPolicies=0;window.parserViolations=0;
+    document.addEventListener('securitypolicyviolation',()=>parserViolations++);
+    customElements.define('dynamic-root-probe',class extends HTMLElement{constructor(){super();parserConstructors++}connectedCallback(){window.parsedRoot=this.getRootNode()}});
+    const markup='<div><template shadowrootmode="'+settings.mode+'"><dynamic-root-probe hidden></dynamic-root-probe>'+content+'</template></div>';
+    let input=markup;
+    if(settings.input==='default-policy'){
+      const meta=document.createElement('meta');meta.httpEquiv='Content-Security-Policy';meta.content="require-trusted-types-for 'script'";document.head.append(meta);
+      trustedTypes.createPolicy('default',{createHTML(){parserPolicies++;return markup}});input='<p>Policy input</p>';
+    }else if(settings.input==='trusted'){
+      input=trustedTypes.createPolicy('parser-test',{createHTML(value){parserPolicies++;return value}}).createHTML(markup);
+      TrustedHTML.prototype.toString=function(){parserCoercions++;return markup};
+    }else if(settings.input==='coercion')input={toString(){parserCoercions++;return markup}};
+    const options=settings.method==='setHTML'?{sanitizer:{elements:['div','template','dynamic-root-probe','audio'],attributes:['shadowrootmode','hidden','autoplay','loop']}}:undefined;
+    const result=host[settings.method](input,options);
+    const button=document.createElement('button');button.id='start-parsed';button.textContent='Start parsed media';button.onclick=()=>{parsedRoot.querySelector('audio').src=src};document.body.append(button);
+    return {supported:true,captured:!!window.parsedRoot,mode:window.parsedRoot?.mode,closed:!host.firstChild?.shadowRoot,result:typeof result,constructors:parserConstructors,coercions:parserCoercions,policies:parserPolicies};
+  })(${JSON.stringify(settings)},${JSON.stringify(content)},${JSON.stringify(audio)})`);
+}
+async function parsedChild(page: Page) {
+  const element = (
+    await page.frames()[1].evaluateHandle('parsedRoot.querySelector("iframe")')
+  ).asElement()!;
+  await expect.poll(async () => !!(await element.contentFrame())).toBe(true);
+  return (await element.contentFrame())!;
+}
+async function startParsedMedia(page: Page, kind: ParsedRootCase['kind']) {
+  if (kind === 'audio') await page.frameLocator('iframe').locator('#start-parsed').click();
+  else await (await parsedChild(page)).getByRole('button', { name: 'Nested context' }).click();
+  await expect
+    .poll(() =>
+      kind === 'audio'
+        ? page
+            .frames()[1]
+            .evaluate(
+              '!parsedRoot.querySelector("audio").paused && parsedRoot.querySelector("audio").currentTime > 0',
+            )
+        : parsedChild(page).then((child) => child.evaluate('ctx.state === "running"')),
+    )
+    .toBe(true);
+}
+async function parsedRootControl(page: Page, settings: ParsedRootCase) {
+  const native = await page.context().newPage();
+  try {
+    await native.setContent(
+      '<iframe sandbox="allow-scripts" srcdoc="<p>Native control</p>"></iframe>',
+    );
+    const result = await makeParsedRoot(native, settings);
+    if (!result.supported || !result.captured) return null;
+    await startParsedMedia(native, settings.kind);
+    return result;
+  } finally {
+    await native.close();
+  }
+}
+
 async function nativeSynthesisStarts(page: Page): Promise<boolean> {
   const control = await page.context().newPage();
   try {
@@ -456,6 +525,57 @@ for (const surface of ['app', 'standalone'] as const) {
       await page.addScriptTag({ content: bundle(surface) });
       await expect(page.frameLocator('iframe').locator('#audio')).toBeVisible();
     });
+
+    for (const settings of [
+      { method: 'setHTMLUnsafe', mode: 'open', kind: 'audio' },
+      { method: 'setHTMLUnsafe', mode: 'closed', kind: 'audio' },
+      { method: 'setHTMLUnsafe', mode: 'closed', kind: 'iframe' },
+      { method: 'setHTML', mode: 'closed', kind: 'audio' },
+      { method: 'setHTMLUnsafe', mode: 'closed', kind: 'audio', input: 'default-policy' },
+      { method: 'setHTMLUnsafe', mode: 'open', kind: 'audio', input: 'trusted' },
+      { method: 'setHTMLUnsafe', mode: 'closed', kind: 'audio', input: 'trusted' },
+      { method: 'setHTMLUnsafe', mode: 'closed', kind: 'audio', input: 'coercion' },
+    ] as const satisfies readonly ParsedRootCase[]) {
+      test(`coordinates dynamic declarative ${settings.method} ${settings.mode} ${settings.kind} ${'input' in settings ? settings.input : 'string'}`, async ({
+        page,
+      }) => {
+        const control = await parsedRootControl(page, settings);
+        test.skip(!control, 'Native parser API, declarative roots or media start are unavailable.');
+        expect(control).toMatchObject({ mode: settings.mode, constructors: 1 });
+        await finishFrameLoad(page);
+        await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+        await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
+        expect(await makeParsedRoot(page, settings)).toEqual(control);
+        await startParsedMedia(page, settings.kind);
+        expect(await page.frames()[1].evaluate('parserViolations')).toBe(0);
+        await expect.poll(() => page.evaluate('narrationPaused()')).toBe(true);
+        await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+        if (settings.mode === 'open') {
+          await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
+          await expect
+            .poll(() => page.frames()[1].evaluate('parsedRoot.querySelector("audio").paused'))
+            .toBe(true);
+        } else {
+          await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'false');
+          await expect.poll(() => page.evaluate('narrationPaused()')).toBe(true);
+          // Only a document reload can prove an inaccessible root and detached media are gone.
+          const frame = page.frames()[1];
+          const navigation = page.waitForEvent(
+            'framenavigated',
+            (candidate) => candidate === frame,
+          );
+          await page.locator('iframe').evaluate((element: HTMLIFrameElement) => {
+            element.srcdoc = element.srcdoc;
+          });
+          await navigation;
+          await expect(page.frameLocator('iframe').locator('#audio')).toBeVisible();
+          await finishFrameLoad(page);
+          await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+          await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
+        }
+        expect(await page.frames()[1].evaluate('window.parserViolations || 0')).toBe(0);
+      });
+    }
 
     for (const media of ['audio', 'video'] as const) {
       test(`coordinates script-disabled nested native ${media} with a guarded reload`, async ({

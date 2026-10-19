@@ -39,7 +39,7 @@ function fixture(html?: string) {
 }
 const playing = { type: 'maic:media:state:v1', documentId: 'current', requestId: 0, playing: true };
 
-function bridgeFixture(unobservable = false, documentId = 'test') {
+function bridgeFixture(unobservable = false, documentId = 'test', globals = {}) {
   const observers: Array<(records: Array<{ addedNodes: EventTarget[] }>) => void> = [];
   const observedRoots: unknown[] = [];
   class Observer {
@@ -196,12 +196,12 @@ function bridgeFixture(unobservable = false, documentId = 'test') {
       this.html = html;
       this.elements = [new Media()];
     }
-    setHTML(html: string, _options?: unknown) {
-      if (html === 'invalid') throw new TypeError('invalid HTML');
+    setHTML(html: unknown, _options?: unknown) {
+      if (String(html) === 'invalid') throw new TypeError('invalid HTML');
       this.elements = [new Media()];
     }
-    setHTMLUnsafe(html: string, _options?: unknown) {
-      if (html === 'invalid') throw new TypeError('invalid HTML');
+    setHTMLUnsafe(html: unknown, _options?: unknown) {
+      if (String(html) === 'invalid') throw new TypeError('invalid HTML');
       this.elements = [new Media()];
     }
     get outerHTML() {
@@ -269,6 +269,7 @@ function bridgeFixture(unobservable = false, documentId = 'test') {
       return selector === '*' ? this.hosts : this.frames;
     }
     createElement(name: string, _options?: unknown): EventTarget {
+      if (name === 'template') return document.createElement('template');
       const Defined = definitions.get(name);
       return Defined
         ? new Defined()
@@ -291,6 +292,7 @@ function bridgeFixture(unobservable = false, documentId = 'test') {
     AudioContext: Context,
     Audio: NativeAudio,
     SpeechSynthesis: Synthesis,
+    ...globals,
   });
   const getSynthesis = vi.fn(() => synthesis);
   Object.defineProperty(frameWindow, 'speechSynthesis', { get: getSynthesis });
@@ -461,6 +463,78 @@ describe('injected media lifetime', () => {
         'root',
       ),
     ).toContain('})("root", true);');
+  });
+  it.each(['setHTMLUnsafe', 'setHTML'] as const)(
+    'refuses silence after %s can create an inaccessible declarative root',
+    async (method) => {
+      const { FrameElement, FrameShadowRoot, control, frameWindow } = bridgeFixture();
+      const receiver = new FrameShadowRoot(new FrameElement());
+      receiver[method](
+        '<template><div><template shadowrootmode="clo&#115;ed"><audio autoplay></audio></template></div></template>',
+      );
+      expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ playing: true }),
+        '*',
+      );
+      control({ action: 'pause', requestId: 91 });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ requestId: 91, playing: true }),
+        '*',
+      );
+    },
+  );
+  it.each([
+    '<p>Ordinary markup</p>',
+    '<div><template shadowrootmode="open"><audio></audio></template></div>',
+    '<!-- <template shadowrootmode="closed"> -->',
+    '<script>const example = \'<template shadowrootmode="closed">\';</script>',
+    '&lt;template shadowrootmode="closed">',
+    '<template shadowrootmode="invalid"></template>',
+  ])('keeps observable parser input confirmable: %s', async (html) => {
+    const { FrameElement, control, frameWindow } = bridgeFixture();
+    new FrameElement().setHTMLUnsafe(html);
+    control({ action: 'pause', requestId: 92 });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ requestId: 92, playing: false }),
+      '*',
+    );
+  });
+  it.each(['setHTMLUnsafe', 'setHTML'] as const)(
+    'does not coerce opaque %s input twice',
+    (method) => {
+      const { FrameElement, frameWindow } = bridgeFixture();
+      const toString = vi.fn(() => '<div><template shadowrootmode="closed"></template></div>');
+      expect(new FrameElement()[method]({ toString })).toBeUndefined();
+      expect(toString).toHaveBeenCalledTimes(1);
+      expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ playing: true }),
+        '*',
+      );
+    },
+  );
+  it('does not invoke a default policy to inspect unsafe parser input again', () => {
+    const createHTML = vi.fn();
+    const { FrameElement, frameWindow } = bridgeFixture(false, 'test', {
+      trustedTypes: { defaultPolicy: { createHTML } },
+    });
+    new FrameElement().setHTMLUnsafe('<p>Policy may transform this input</p>');
+    expect(createHTML).not.toHaveBeenCalled();
+    expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ playing: true }),
+      '*',
+    );
+  });
+  it('keeps safe parser inspection away from TrustedTypes sinks', () => {
+    const { FrameElement, frameWindow } = bridgeFixture(false, 'test', { trustedTypes: {} });
+    new FrameElement().setHTML('<div><template shadowrootmode="clo&#115;ed"></template></div>');
+    expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ playing: true }),
+      '*',
+    );
   });
   it('registers native declarative roots through a self-removing marker', () => {
     const { FrameElement, FrameShadowRoot, frameDocument, definitions, observedRoots, control } =

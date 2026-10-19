@@ -23,6 +23,15 @@ const MEDIA_BRIDGE = String.raw`(function (documentId, unobservable) {
   var observer;
   var shadowRoots = new WeakMap();
   var cloneSeeds = new WeakSet();
+  var trustedTypes = window.trustedTypes;
+  var isTrustedHTML = trustedTypes && trustedTypes.isHTML;
+  var trustedHTMLString = window.TrustedHTML && window.TrustedHTML.prototype.toString;
+  var templatePrototype = document.createElement('template');
+  var templateHTML;
+  while (templatePrototype && !templateHTML) {
+    templateHTML = Object.getOwnPropertyDescriptor(templatePrototype, 'innerHTML');
+    templatePrototype = Object.getPrototypeOf(templatePrototype);
+  }
   var rootMarkerName = 'maic-media-root-' + documentId.toLowerCase();
   var observation = { childList: true, subtree: true, attributes: true, attributeFilter: ['srcdoc', 'sandbox'] };
   function observeRoot(root) {
@@ -285,6 +294,32 @@ const MEDIA_BRIDGE = String.raw`(function (documentId, unobservable) {
       }
     });
   });
+  function mayHideParsedRoot(input, safe) {
+    try {
+      // A policy or opaque coercion can change the parsed input; never invoke either twice.
+      if (!safe && trustedTypes && trustedTypes.defaultPolicy) return true;
+      var html = input;
+      if (typeof html !== 'string') {
+        if (safe || !isTrustedHTML || !isTrustedHTML.call(trustedTypes, input) || !trustedHTMLString) return true;
+        html = trustedHTMLString.call(input);
+      }
+      if (!/<template[\t\n\f\r />]/i.test(html)) return false;
+      // setHTML accepts plain strings even under TrustedTypes; do not probe a protected sink.
+      if (safe && trustedTypes) return /shadowrootmode[\t\n\f\r ]*=[\t\n\f\r ]*(?:"(?:closed|[^"]*&)[^"]*"|'(?:closed|[^']*&)[^']*'|(?:closed|[^\t\n\f\r >]*&)[^\t\n\f\r >]*)/i.test(html);
+      var template = document.createElement('template');
+      Reflect.apply(templateHTML.set, template, [input]);
+      var pending = [template.content];
+      while (pending.length) {
+        var templates = pending.pop().querySelectorAll('template');
+        for (var i = 0; i < templates.length; i++) {
+          var declaration = templates[i];
+          if ((declaration.getAttribute('shadowrootmode') || '').toLowerCase() === 'closed') return true;
+          if (declaration.content) pending.push(declaration.content);
+        }
+      }
+      return false;
+    } catch (_) { return true; }
+  }
   [typeof Element === 'undefined' ? {} : Element.prototype,
     typeof ShadowRoot === 'undefined' ? {} : ShadowRoot.prototype
   ].forEach(function (prototype) {
@@ -295,6 +330,11 @@ const MEDIA_BRIDGE = String.raw`(function (documentId, unobservable) {
           var result = Reflect.apply(target, receiver, args);
           observe(receiver);
           visitShadowRoots(receiver, observeRoot);
+          // shortcut: inaccessible dynamic roots refuse silence until the document reloads.
+          if (!unobservable && mayHideParsedRoot(args[0], name === 'setHTML')) {
+            unobservable = true;
+            changed();
+          }
           return result;
         }
       });

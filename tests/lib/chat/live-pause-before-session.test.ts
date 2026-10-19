@@ -93,7 +93,8 @@ it.each(['discussion', 'qa'] as const)(
     expect(mocks.capabilities).toHaveBeenCalled();
     expect(chat.sessions).toHaveLength(0);
     act(() => {
-      expect(chat.pauseActiveLiveBuffer(true)).toBe(false);
+      // Pending QA admission is a tracked pause target before its session is published.
+      expect(chat.pauseActiveLiveBuffer(true)).toBe(type === 'qa');
     });
     await act(async () => {
       release({});
