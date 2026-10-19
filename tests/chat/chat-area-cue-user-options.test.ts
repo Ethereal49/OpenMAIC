@@ -221,6 +221,7 @@ it.each([
         }).outputText,
         {
           engineRef: { current: engine },
+          livePauseVersionRef: { current: 0 },
           chatAreaRef: ref,
           lectureSessionIdRef: { current: sessionId },
         },

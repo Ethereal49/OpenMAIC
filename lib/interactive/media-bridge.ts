@@ -22,6 +22,8 @@ const MEDIA_BRIDGE = String.raw`(function (documentId, unobservable) {
   var childRequest = 0;
   var observer;
   var shadowRoots = new WeakMap();
+  var cloneSeeds = new WeakSet();
+  var rootMarkerName = 'maic-media-root-' + documentId.toLowerCase();
   var observation = { childList: true, subtree: true, attributes: true, attributeFilter: ['srcdoc', 'sandbox'] };
   function observeRoot(root) {
     if (observer) observer.observe(root, observation);
@@ -236,13 +238,49 @@ const MEDIA_BRIDGE = String.raw`(function (documentId, unobservable) {
       }
     });
   });
+  function visitShadowRoots(node, visit) {
+    var pending = [node];
+    while (pending.length) {
+      var current = pending.pop();
+      if (!current || !current.querySelectorAll) continue;
+      [current].concat(Array.from(current.querySelectorAll('*'))).forEach(function (host) {
+        var root = host.shadowRoot || shadowRoots.get(host);
+        if (root && visit(root) !== false) pending.push(root);
+      });
+    }
+  }
+  function prepareClone(node) {
+    var seeds = [];
+    if (!(node instanceof Node) || node instanceof ShadowRoot) return seeds;
+    visitShadowRoots(node, function (root) {
+      if (!root.clonable) return false;
+      var marker = document.createElement(rootMarkerName);
+      marker.hidden = true;
+      marker.setAttribute('data-maic-shadow-root', '');
+      cloneSeeds.add(marker);
+      root.insertBefore(marker, root.firstChild);
+      seeds.push(marker);
+    });
+    return seeds;
+  }
   [[Node.prototype, 'cloneNode'], [Document.prototype, 'importNode'],
     [typeof DOMParser === 'undefined' ? {} : DOMParser.prototype, 'parseFromString'],
     [typeof Range === 'undefined' ? {} : Range.prototype, 'createContextualFragment']
   ].forEach(function (entry) {
     var native = entry[0][entry[1]];
     if (native) entry[0][entry[1]] = new Proxy(native, {
-      apply: function (target, receiver, args) { return observe(Reflect.apply(target, receiver, args)); }
+      apply: function (target, receiver, args) {
+        var cloning = entry[1] === 'cloneNode' || entry[1] === 'importNode';
+        var source = entry[1] === 'cloneNode' ? receiver : args[0];
+        var seeds = cloning && !(entry[1] === 'importNode' && source instanceof Document) ? prepareClone(source) : [];
+        try {
+          var result = observe(Reflect.apply(target, receiver, args));
+          if (cloning) visitShadowRoots(result, observeRoot);
+          return result;
+        } finally {
+          seeds.forEach(function (marker) { marker.remove(); cloneSeeds.delete(marker); });
+        }
+      }
     });
   });
   [typeof Element === 'undefined' ? {} : Element.prototype,
@@ -268,14 +306,21 @@ const MEDIA_BRIDGE = String.raw`(function (documentId, unobservable) {
       return result;
     }
   });
-  // Native declarative roots bypass attachShadow; the parser connects this marker inside them.
-  if (typeof customElements !== 'undefined') customElements.define('maic-media-root-' + documentId.toLowerCase(), class extends HTMLElement {
+  function registerRoot(root) {
+    if (!(root instanceof ShadowRoot)) return false;
+    shadowRoots.set(root.host, observeRoot(root));
+    return true;
+  }
+  // Upgrade reactions run after native cloning builds the root, even before the clone connects.
+  if (typeof customElements !== 'undefined') customElements.define(rootMarkerName, class extends HTMLElement {
+    constructor() {
+      super();
+      if (registerRoot(this.getRootNode())) this.remove();
+    }
     connectedCallback() {
-      var root = this.getRootNode();
-      if (root instanceof ShadowRoot) {
-        shadowRoots.set(root.host, observeRoot(root));
-        scanChildren();
-      }
+      if (cloneSeeds.has(this)) return;
+      registerRoot(this.getRootNode());
+      scanChildren();
       this.remove();
     }
   });

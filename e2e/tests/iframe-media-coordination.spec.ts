@@ -88,8 +88,14 @@ type DeclarativeFixture = {
   kind: 'audio' | 'video' | 'iframe' | 'raw';
   mode: 'open' | 'closed';
   scoped?: boolean;
+  clonable?: boolean;
 };
-function declarativeActivity({ kind, mode, scoped = false }: DeclarativeFixture): string {
+function declarativeActivity({
+  kind,
+  mode,
+  scoped = false,
+  clonable = false,
+}: DeclarativeFixture): string {
   const content =
     kind === 'iframe'
       ? `<iframe name="declarative-child" srcdoc="${escapeAttribute(nestedMedia)}"></iframe>`
@@ -100,8 +106,8 @@ function declarativeActivity({ kind, mode, scoped = false }: DeclarativeFixture)
 window.nativeAttachCalls=0;const nativeAttach=Element.prototype.attachShadow;Element.prototype.attachShadow=function(){nativeAttachCalls++;return nativeAttach.apply(this,arguments)};
 window.declarativePlayCalls=0;const nativePlay=HTMLMediaElement.prototype.play;HTMLMediaElement.prototype.play=function(){declarativePlayCalls++;return nativePlay.apply(this,arguments)};
 window.documentPlayEvents=0;document.addEventListener('play',()=>documentPlayEvents++,true);
-customElements.define('native-dsd-probe',class extends HTMLElement{connectedCallback(){window.declarativeRoot=this.getRootNode();this.remove()}});
-</script><div id="declarative-host"><template shadowrootmode="${mode}"${scoped ? ' shadowrootcustomelementregistry' : ''}><div><template shadowrootmode="${mode}"${scoped ? ' shadowrootcustomelementregistry' : ''}>${scoped ? '<svg onload="window.declarativeRoot=this.getRootNode();this.remove()"></svg>' : '<native-dsd-probe></native-dsd-probe>'}${content}</template></div></template></div>
+customElements.define('native-dsd-probe',class extends HTMLElement{constructor(){super();const root=this.getRootNode();if(root instanceof ShadowRoot)window.clonedRoot=root}connectedCallback(){window.declarativeRoot=this.getRootNode();if(declarativeRoot.clonable)this.hidden=true;else this.remove()}});
+</script><div id="declarative-host"><template shadowrootmode="${mode}"${scoped ? ' shadowrootcustomelementregistry' : ''}${clonable ? ' shadowrootclonable' : ''}><div><template shadowrootmode="${mode}"${scoped ? ' shadowrootcustomelementregistry' : ''}${clonable ? ' shadowrootclonable' : ''}>${scoped ? '<svg onload="window.declarativeRoot=this.getRootNode();this.remove()"></svg>' : '<native-dsd-probe></native-dsd-probe>'}${content}</template></div></template></div>
 <button id="start-declarative" onclick="declarativeRoot.querySelector('audio,video').src=${escapeAttribute(JSON.stringify(audio))}">Start declarative autoplay</button>`;
 }
 const hostPath = 'components/scene-renderers/InteractiveIframeHost.tsx';
@@ -273,6 +279,97 @@ async function adjacentAutoplayStarts(
     }
   } finally {
     await control.close();
+  }
+}
+
+type CloneCase = {
+  kind: 'audio' | 'iframe' | 'raw';
+  imperative: boolean;
+  method: 'cloneNode' | 'importNode';
+  detached: boolean;
+};
+async function makeClosedClone(page: Page, settings: CloneCase) {
+  return page.frames()[1].evaluate(({ kind, imperative, method, detached }) => {
+    const state = window as unknown as {
+      declarativeRoot: ShadowRoot;
+      clonedRoot?: ShadowRoot;
+      clonedHost?: Element;
+    };
+    const parent = document.createElement('section');
+    let original: Element;
+    let sourceRoot: ShadowRoot;
+    if (imperative) {
+      original = document.createElement('div');
+      sourceRoot = original.attachShadow({ mode: 'closed', clonable: true });
+      sourceRoot.innerHTML =
+        '<native-dsd-probe hidden></native-dsd-probe>' +
+        (kind === 'raw'
+          ? '<iframe name="original-raw" title="Clone activity" sandbox="allow-scripts" src="http://external.test/clone"></iframe>'
+          : '<audio autoplay loop></audio>');
+      parent.append(original);
+    } else {
+      original = document.querySelector('#declarative-host')!;
+      sourceRoot = state.declarativeRoot;
+      original.replaceWith(parent);
+      parent.append(original);
+    }
+    if (!sourceRoot.clonable) return { supported: false, captured: false, sourceUnchanged: true };
+    const before = sourceRoot.innerHTML;
+    state.clonedRoot = undefined;
+    const clone =
+      method === 'cloneNode' ? parent.cloneNode(true) : document.importNode(parent, true);
+    state.clonedHost = clone as Element;
+    const root = state.clonedRoot;
+    if (root) {
+      const frame = root.querySelector('iframe');
+      if (frame) frame.name = 'cloned-frame';
+      state.declarativeRoot = root;
+    }
+    if (!detached) document.body.append(clone);
+    return {
+      supported: true,
+      captured: !!root,
+      sourceUnchanged: sourceRoot.innerHTML === before,
+      mode: root?.mode,
+      hidden: root?.host.shadowRoot === null,
+      markers: root?.querySelectorAll('[data-maic-shadow-root]').length,
+    };
+  }, settings);
+}
+async function clonedFrame(page: Page) {
+  const element = (
+    await page.frames()[1].evaluateHandle('clonedRoot.querySelector("iframe")')
+  ).asElement()!;
+  await expect.poll(async () => !!(await element.contentFrame())).toBe(true);
+  return (await element.contentFrame())!;
+}
+async function clonedAutoplayStarts(page: Page, settings: CloneCase) {
+  const native = await page.context().newPage();
+  try {
+    await native.setContent(
+      `<iframe sandbox="allow-scripts" srcdoc="${escapeAttribute(declarativeActivity({ kind: 'audio', mode: 'closed', clonable: true }))}"></iframe>`,
+    );
+    const clone = await makeClosedClone(native, settings);
+    if (!clone.supported || !clone.captured) return false;
+    await native.frameLocator('iframe').locator('#start-declarative').click();
+    try {
+      await expect
+        .poll(
+          () =>
+            native
+              .frames()[1]
+              .evaluate(
+                '!clonedRoot.querySelector("audio").paused && clonedRoot.querySelector("audio").currentTime > 0',
+              ),
+          { timeout: 2000 },
+        )
+        .toBe(true);
+      return true;
+    } catch {
+      return false;
+    }
+  } finally {
+    await native.close();
   }
 }
 
@@ -593,6 +690,99 @@ for (const surface of ['app', 'standalone'] as const) {
         .toBe(true);
       await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
     });
+
+    for (const settings of [
+      { kind: 'audio', imperative: false, method: 'cloneNode', detached: false },
+      { kind: 'iframe', imperative: false, method: 'importNode', detached: false },
+      { kind: 'audio', imperative: true, method: 'cloneNode', detached: false },
+      { kind: 'raw', imperative: true, method: 'importNode', detached: false },
+      { kind: 'audio', imperative: false, method: 'cloneNode', detached: true },
+    ] satisfies CloneCase[]) {
+      test(`coordinates clonable closed roots ${JSON.stringify(settings)}`, async ({ page }) => {
+        if (settings.kind === 'audio')
+          test.skip(
+            !(await clonedAutoplayStarts(page, settings)),
+            'Native cloned closed-root autoplay does not start in the independent same-engine control.',
+          );
+        await page.route('http://external.test/clone', (route) =>
+          route.fulfill({
+            contentType: 'text/html',
+            body: '<button onclick="window.ctx=new AudioContext();const o=ctx.createOscillator();o.connect(ctx.destination);o.start();ctx.resume()">Clone context</button>',
+          }),
+        );
+        await page.goto('http://localhost/media-test');
+        await page.addScriptTag({
+          content: bundle(surface, false, false, undefined, {
+            kind: settings.kind === 'iframe' ? 'iframe' : 'audio',
+            mode: 'closed',
+            clonable: true,
+          }),
+        });
+        await expect(page.frameLocator('iframe').locator('#start-declarative')).toBeVisible();
+        await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+        await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
+        const clone = await makeClosedClone(page, settings);
+        test.skip(!clone.supported, 'Native clonable shadow roots are unavailable.');
+        expect(clone).toMatchObject({
+          captured: true,
+          sourceUnchanged: true,
+          mode: 'closed',
+          hidden: true,
+          markers: 0,
+        });
+        const frame = page.frames()[1];
+        if (settings.kind === 'audio') {
+          await page.frameLocator('iframe').locator('#start-declarative').click();
+          await expect
+            .poll(() =>
+              frame.evaluate(
+                '!clonedRoot.querySelector("audio").paused && clonedRoot.querySelector("audio").currentTime > 0',
+              ),
+            )
+            .toBe(true);
+          expect(await frame.evaluate('declarativePlayCalls')).toBe(0);
+        } else if (settings.kind === 'iframe') {
+          const child = await clonedFrame(page);
+          await child.getByRole('button', { name: 'Nested context' }).click();
+          await expect.poll(() => child.evaluate('ctx.state')).toBe('running');
+        } else {
+          await expect
+            .poll(() =>
+              frame.evaluate(
+                '!!clonedRoot.querySelector("button") && !clonedRoot.querySelector("iframe")',
+              ),
+            )
+            .toBe(true);
+          const open = await frame.evaluateHandle(
+            () =>
+              (window as unknown as { clonedRoot: ShadowRoot }).clonedRoot.querySelector('button')!,
+          );
+          await open.click();
+          const child = await clonedFrame(page);
+          await child.getByRole('button', { name: 'Clone context' }).click();
+          await expect.poll(() => child.evaluate('ctx.state')).toBe('running');
+        }
+        await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+        await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+        if (settings.kind === 'audio')
+          await expect
+            .poll(() => frame.evaluate('clonedRoot.querySelector("audio").paused'))
+            .toBe(true);
+        else if (settings.kind === 'iframe')
+          await expect
+            .poll(async () => (await clonedFrame(page)).evaluate('ctx.state'))
+            .toBe('suspended');
+        else
+          await expect
+            .poll(() =>
+              frame.evaluate(
+                '!!clonedRoot.querySelector("button") && !clonedRoot.querySelector("iframe")',
+              ),
+            )
+            .toBe(true);
+        await expect(page.locator('body')).toHaveAttribute('data-narration-playing', 'true');
+      });
+    }
 
     test('fails closed for an unobservable scoped declarative registry', async ({ page }) => {
       await page.goto('http://localhost/media-test');

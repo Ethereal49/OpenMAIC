@@ -1041,7 +1041,7 @@ describe('PlaybackChromeRoot element-reference ownership', () => {
     },
   );
 
-  it.each(['hide', 'show', 'scene', 'media'] as const)(
+  it.each(['hide', 'show', 'scene', 'media', 'pause'] as const)(
     'discards a pending proactive Join after a newer %s intent',
     async (intent) => {
       mocks.engineMode = 'paused';
@@ -1073,6 +1073,14 @@ describe('PlaybackChromeRoot element-reference ownership', () => {
           await rerenderOwner();
         }
         if (intent === 'media') ownerRef.current!.pauseForInteractiveMedia();
+        if (intent === 'pause') {
+          mocks.engineMode = 'playing';
+          mocks.enginePause.mockImplementation(() => {
+            mocks.engineMode = 'paused';
+          });
+          await (mocks.roundtableProps!.onPlayPause as () => Promise<void>)();
+          expect(mocks.engineMode).toBe('paused');
+        }
       });
       await act(async () => {
         finish(true);

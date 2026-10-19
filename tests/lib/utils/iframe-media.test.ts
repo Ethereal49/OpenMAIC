@@ -58,7 +58,7 @@ function bridgeFixture(unobservable = false, documentId = 'test') {
     }
   }
   class FrameNode extends EventTarget {
-    cloneNode() {
+    cloneNode(_deep?: boolean) {
       return new (this.constructor as typeof FrameNode)();
     }
   }
@@ -144,18 +144,46 @@ function bridgeFixture(unobservable = false, documentId = 'test') {
     return Object.assign(Reflect.construct(Media, [], new.target || NativeAudio), { src });
   }
   NativeAudio.prototype = Media.prototype;
+  let constructionRoot: FrameElement | null = null;
   class FrameElement extends FrameNode {
     style = { cssText: '', width: '', height: '' };
+    hidden = false;
+    isConnected = false;
+    childNodes: FrameElement[] = [];
+    private attributes = new Map<string, string>();
+    setAttribute(name: string, value: string) {
+      this.attributes.set(name, value);
+    }
+    getAttribute(name: string) {
+      return this.attributes.get(name) ?? null;
+    }
+    getRootNode(): FrameElement {
+      return constructionRoot ?? this.parentNode?.getRootNode() ?? this;
+    }
+    get firstChild() {
+      return this.childNodes[0] ?? null;
+    }
+    insertBefore(node: FrameElement, before: FrameElement | null) {
+      node.parentNode = this;
+      const index = before ? this.childNodes.indexOf(before) : this.childNodes.length;
+      this.childNodes.splice(index, 0, node);
+      return node;
+    }
+    remove() {
+      if (this.parentNode)
+        this.parentNode.childNodes = this.parentNode.childNodes.filter((node) => node !== this);
+      this.parentNode = null;
+    }
     parentNode: FrameElement | null = null;
     elements: Media[] = [];
     hosts: FrameElement[] = [];
     frames: FrameDocument['frames'] = [];
     shadowRoot: FrameElement | null = null;
     private attached = false;
-    attachShadow(options: { mode: 'open' | 'closed' } = { mode: 'open' }) {
+    attachShadow(options: { mode: 'open' | 'closed'; clonable?: boolean } = { mode: 'open' }) {
       if (this.attached) throw new Error('already attached');
       this.attached = true;
-      const root = new FrameElement();
+      const root = new FrameShadowRoot(this, options.mode, options.clonable ?? false);
       if (options.mode === 'open') this.shadowRoot = root;
       return root;
     }
@@ -190,7 +218,11 @@ function bridgeFixture(unobservable = false, documentId = 'test') {
     }
   }
   class FrameShadowRoot extends FrameElement {
-    constructor(readonly host: FrameElement) {
+    constructor(
+      readonly host: FrameElement,
+      readonly mode = 'closed',
+      readonly clonable = false,
+    ) {
       super();
     }
   }
@@ -221,7 +253,12 @@ function bridgeFixture(unobservable = false, documentId = 'test') {
       return selector === '*' ? this.hosts : this.frames;
     }
     createElement(name: string, _options?: unknown): EventTarget {
-      return ['audio', 'video'].includes(name.toLowerCase()) ? new Media() : new FrameElement();
+      const Defined = definitions.get(name);
+      return Defined
+        ? new Defined()
+        : ['audio', 'video'].includes(name.toLowerCase())
+          ? new Media()
+          : new FrameElement();
     }
     createElementNS(namespace: string, name: string, _options?: unknown): EventTarget {
       return namespace === 'http://www.w3.org/1999/xhtml'
@@ -248,6 +285,7 @@ function bridgeFixture(unobservable = false, documentId = 'test') {
   const frameDocument = new FrameDocument();
   const nativePlay = vi.spyOn(frameDocument, 'addEventListener');
   const nativeInsert = vi.spyOn(FrameElement.prototype, 'insertAdjacentHTML');
+  const nativeClone = vi.spyOn(FrameNode.prototype, 'cloneNode');
   runInNewContext(script, {
     window: frameWindow,
     document: frameDocument,
@@ -279,6 +317,16 @@ function bridgeFixture(unobservable = false, documentId = 'test') {
     FrameShadowRoot,
     definitions,
     nativeInsert,
+    nativeClone,
+    constructMarker: (root: FrameShadowRoot) => {
+      constructionRoot = root;
+      try {
+        const Marker = definitions.get('maic-media-root-' + documentId.toLowerCase())!;
+        return new Marker();
+      } finally {
+        constructionRoot = null;
+      }
+    },
     Parser,
     frameDocument,
     observedRoots,
@@ -308,6 +356,38 @@ function bridgeFixture(unobservable = false, documentId = 'test') {
 }
 
 describe('injected media lifetime', () => {
+  it('registers media in a cloned closed root during marker upgrade before connection', () => {
+    const { FrameElement, FrameShadowRoot, Media, constructMarker, frameWindow } = bridgeFixture();
+    const root = new FrameShadowRoot(new FrameElement(), 'closed', true);
+    const audio = new Media();
+    root.elements.push(audio);
+    expect(root.host.isConnected).toBe(false);
+    constructMarker(root);
+    audio.paused = false;
+    audio.dispatchEvent(new Event('play'));
+    expect(frameWindow.parent.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ playing: true }),
+      '*',
+    );
+  });
+  it('seeds native closed-root cloning temporarily and restores the source even on native errors', () => {
+    const { FrameElement, nativeClone } = bridgeFixture();
+    const host = new FrameElement();
+    const root = host.attachShadow({ mode: 'closed', clonable: true });
+    const fail = new TypeError('native cloning failure');
+    nativeClone.mockImplementationOnce(() => {
+      expect(root.childNodes).toHaveLength(1);
+      return new FrameElement();
+    });
+    host.cloneNode(true);
+    expect(root.childNodes).toHaveLength(0);
+    nativeClone.mockImplementationOnce(() => {
+      expect(root.childNodes).toHaveLength(1);
+      throw fail;
+    });
+    expect(() => host.cloneNode(true)).toThrow(fail);
+    expect(root.childNodes).toHaveLength(0);
+  });
   it('observes detached replacements made through native outerHTML and their later reuse', async () => {
     const { FrameElement, Media, frameWindow, control, media } = bridgeFixture();
     const parent = new FrameElement();

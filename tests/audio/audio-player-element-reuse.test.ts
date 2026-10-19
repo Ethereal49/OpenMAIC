@@ -29,7 +29,9 @@ function stubObjectUrl() {
 class AudioStub {
   play = vi.fn(async () => {});
   pause = vi.fn();
-  load = vi.fn();
+  load = vi.fn(() => {
+    this.ended = false;
+  });
   removeAttribute = vi.fn();
   addEventListener = vi.fn();
   removeEventListener = vi.fn();
@@ -118,6 +120,72 @@ describe('AudioPlayer narration element', () => {
     instances[0].onended?.();
     expect(player.hasActiveAudio()).toBe(false);
     player.stop();
+  });
+
+  it('keeps EOF active until its queued completion callback is consumed without replaying it', async () => {
+    stubObjectUrl();
+    const { instances } = stubAudio();
+    const { AudioPlayer } = await import('@/lib/utils/audio-player');
+    const player = new AudioPlayer();
+    await player.play('audio-1');
+    const element = instances[0];
+    element.ended = true;
+    element.paused = true;
+    player.pause();
+    expect(player.hasActiveAudio()).toBe(true);
+    player.resume();
+    expect(element.play).toHaveBeenCalledOnce();
+    element.onended?.();
+    expect(player.hasActiveAudio()).toBe(false);
+    player.stop();
+  });
+
+  it('does not let a queued old EOF consume the second speech while its bytes are pending', async () => {
+    stubObjectUrl();
+    const { instances } = stubAudio();
+    let finishSecond!: (value: { blob: Blob }) => void;
+    getMock.mockImplementation((id: string) =>
+      id === 'audio-2'
+        ? new Promise((resolve) => {
+            finishSecond = resolve;
+          })
+        : Promise.resolve({ blob: new Blob(['audio']) }),
+    );
+    const { AudioPlayer } = await import('@/lib/utils/audio-player');
+    const { PlaybackEngine } = await import('@/lib/playback/engine');
+    const player = new AudioPlayer();
+    const engine = new PlaybackEngine(
+      [
+        {
+          id: 'scene',
+          actions: [1, 2, 3].map((id) => ({
+            id: String(id),
+            type: 'speech',
+            text: 'Line ' + id,
+            audioId: 'audio-' + id,
+          })),
+        },
+      ] as Scene[],
+      { clearEffects: vi.fn() } as unknown as ActionEngine,
+      player,
+      { beforeSpeech: async () => true },
+    );
+    engine.start();
+    await vi.waitFor(() => expect(instances[0]?.play).toHaveBeenCalledOnce());
+    const element = instances[0];
+    element.ended = true;
+    element.paused = true;
+    engine.pause();
+    await engine.resume();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    element.onended?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await vi.waitFor(() => expect(getMock).toHaveBeenCalledWith('audio-2'));
+    expect(getMock.mock.calls.map(([id]) => id)).toEqual(['audio-1', 'audio-2']);
+    finishSecond({ blob: new Blob(['second']) });
+    await vi.waitFor(() => expect(element.play).toHaveBeenCalledTimes(2));
+    expect(instances).toHaveLength(1);
+    engine.stop();
   });
 
   it('starts the pending second speech after silence times out between clips', async () => {

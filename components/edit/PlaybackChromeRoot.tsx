@@ -1210,6 +1210,7 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
     const handlePlayPause = useCallback(async () => {
       const engine = engineRef.current;
       if (!engine) return;
+      livePauseVersionRef.current++;
 
       const mode = engine.getMode();
       if (mode === 'playing' || mode === 'live') {
