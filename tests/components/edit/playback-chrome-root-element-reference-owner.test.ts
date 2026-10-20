@@ -16,34 +16,26 @@ const mocks = vi.hoisted(() => ({
   canvasProps: undefined as Record<string, unknown> | undefined,
   coursewareReferenceEnabled: true,
   topicActive: false,
-  engineMode: 'idle' as 'idle' | 'playing' | 'paused' | 'live',
+  engineMode: 'idle' as 'idle' | 'playing' | 'paused',
   engineOptions: undefined as
     | {
         beforeSpeech?: () => Promise<boolean>;
-        onModeChange?: (mode: 'idle' | 'playing' | 'paused' | 'live') => void;
+        onModeChange?: (mode: 'idle' | 'playing' | 'paused') => void;
         onProgress?: (snapshot: { actionIndex: number; sceneId: string }) => void;
         onUserInterrupt?: (text: string) => void;
         onComplete?: () => void;
-        onProactiveShow?: (trigger: { id: string; question: string; agentId?: string }) => void;
-        onProactiveHide?: () => void;
       }
     | undefined,
   startLecture: vi.fn(),
   endSession: vi.fn(),
   engineStop: vi.fn(),
   enginePause: vi.fn(),
-  pauseBuffer: vi.fn(),
-  pauseActiveLiveBuffer: vi.fn(),
-  discussionPause: vi.fn(),
-  discussionResume: vi.fn(),
-  discussionOptions: undefined as { onPlaybackBlocked?: () => void } | undefined,
-  resumeActiveLiveBuffer: vi.fn(),
-  sendFrameMessage: vi.fn(),
-  hiddenFrameMessage: vi.fn(),
+  narrating: true,
+  sendFrameMessage: vi.fn().mockResolvedValue(true),
+  hiddenFrameMessage: vi.fn().mockResolvedValue(true),
   engineStart: vi.fn(),
   engineContinuePlayback: vi.fn(),
   handleUserInterrupt: vi.fn(),
-  confirmDiscussion: vi.fn(),
 }));
 
 const textElement = {
@@ -275,12 +267,12 @@ vi.mock('@/components/chat/chat-area', async () => {
         getLectureMessageId: vi.fn(),
         startDiscussion: vi.fn(),
         switchToTab: vi.fn(),
-        resumeActiveLiveBuffer: mocks.resumeActiveLiveBuffer,
-        pauseActiveLiveBuffer: mocks.pauseActiveLiveBuffer,
+        resumeActiveLiveBuffer: vi.fn(),
+        pauseActiveLiveBuffer: vi.fn(),
         stopActiveSession: vi.fn(),
         continueActiveSoftClosingSession: vi.fn(),
         getActiveSessionType: vi.fn(),
-        pauseBuffer: mocks.pauseBuffer,
+        pauseBuffer: vi.fn(),
         resumeBuffer: vi.fn(),
         resumeActiveSession: vi.fn(),
       }));
@@ -297,7 +289,7 @@ vi.mock('@/lib/playback', () => ({
       _audioPlayer: unknown,
       options: {
         beforeSpeech?: () => Promise<boolean>;
-        onModeChange?: (mode: 'idle' | 'playing' | 'paused' | 'live') => void;
+        onModeChange?: (mode: 'idle' | 'playing' | 'paused') => void;
         onUserInterrupt?: (text: string) => void;
         onComplete?: () => void;
       },
@@ -330,15 +322,14 @@ vi.mock('@/lib/playback', () => ({
     continuePlayback() {
       mocks.engineContinuePlayback();
     }
+    isNarrating() {
+      return mocks.engineMode === 'playing' && mocks.narrating;
+    }
     pause() {
       mocks.enginePause();
     }
-    confirmDiscussion() {
-      mocks.confirmDiscussion();
-    }
-    skipDiscussion() {
-      mocks.engineOptions?.onProactiveHide?.();
-    }
+    confirmDiscussion() {}
+    skipDiscussion() {}
   },
   computePlaybackView: () => ({ kind: 'idle', isTopicActive: mocks.topicActive }),
   shouldAutoResumeLecture: () => false,
@@ -369,25 +360,19 @@ vi.mock('@/lib/utils/audio-player', () => ({
   }),
 }));
 vi.mock('@/lib/hooks/use-discussion-tts', () => ({
-  useDiscussionTTS: (options: typeof mocks.discussionOptions) => {
-    mocks.discussionOptions = options;
-    return {
-      cleanup: vi.fn(),
-      pause: mocks.discussionPause,
-      resume: mocks.discussionResume,
-      handleSegmentSealed: vi.fn(),
-      shouldHold: vi.fn(() => false),
-    };
-  },
+  useDiscussionTTS: () => ({
+    cleanup: vi.fn(),
+    pause: vi.fn(),
+    resume: vi.fn(),
+    handleSegmentSealed: vi.fn(),
+    shouldHold: vi.fn(() => false),
+  }),
 }));
 vi.mock('@/lib/store/widget-iframe', () => ({
   useWidgetIframeStore: {
     getState: () => ({
       getSendMessage: () => undefined,
-      sendMessageByScene: {
-        'scene-1': mocks.sendFrameMessage,
-        hidden: mocks.hiddenFrameMessage,
-      },
+      sendMessageByScene: { current: mocks.sendFrameMessage, hidden: mocks.hiddenFrameMessage },
     }),
   },
 }));
@@ -413,6 +398,10 @@ describe('PlaybackChromeRoot element-reference ownership', () => {
 
   beforeEach(() => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    mocks.narrating = true;
+    mocks.enginePause.mockClear();
+    mocks.hiddenFrameMessage.mockReset().mockResolvedValue(true);
+    mocks.sendFrameMessage.mockReset().mockResolvedValue(true);
     mocks.whiteboardOpen = false;
     mocks.runtimeProjection = null;
     stageState.stage.whiteboard = [];
@@ -429,19 +418,9 @@ describe('PlaybackChromeRoot element-reference ownership', () => {
     mocks.endSession.mockReset();
     mocks.endSession.mockResolvedValue(undefined);
     mocks.engineStop.mockReset();
-    mocks.enginePause.mockReset();
-    mocks.pauseBuffer.mockReset();
-    mocks.pauseActiveLiveBuffer.mockReset();
-    mocks.discussionPause.mockReset();
-    mocks.discussionResume.mockReset().mockResolvedValue(true);
-    mocks.resumeActiveLiveBuffer.mockReset();
-    mocks.discussionOptions = undefined;
-    mocks.sendFrameMessage.mockReset();
-    mocks.hiddenFrameMessage.mockReset();
     mocks.engineStart.mockReset();
     mocks.engineContinuePlayback.mockReset();
     mocks.handleUserInterrupt.mockReset();
-    mocks.confirmDiscussion.mockReset();
     stageState.scenes = [scene, secondScene];
     stageState.currentSceneId = scene.id;
     stageState.setCurrentSceneId.mockClear();
@@ -763,23 +742,25 @@ describe('PlaybackChromeRoot element-reference ownership', () => {
     expect(mocks.sendMessage).toHaveBeenCalledWith('Explain this', undefined);
   });
 
-  it('pauses narration and the live speech buffer when iframe media starts', async () => {
+  it('pauses only actual lecture narration when frame media starts', async () => {
     mocks.engineMode = 'playing';
-    mocks.pauseActiveLiveBuffer.mockReturnValue(true);
     const ownerRef = createRef<PlaybackChromeRootHandle>();
     await renderOwner({ ref: ownerRef });
-    await mocks.engineOptions?.beforeSpeech?.();
-    expect(mocks.sendFrameMessage).toHaveBeenCalledWith('maic:media:control:v1', {});
     act(() => ownerRef.current?.pauseForInteractiveMedia());
     expect(mocks.enginePause).toHaveBeenCalledOnce();
-    expect(mocks.pauseActiveLiveBuffer).toHaveBeenCalledOnce();
-    expect(mocks.pauseActiveLiveBuffer).toHaveBeenCalledWith(false);
-    expect(mocks.discussionPause).toHaveBeenCalledOnce();
+    mocks.enginePause.mockClear();
+    mocks.narrating = false;
+    act(() => ownerRef.current?.pauseForInteractiveMedia());
+    expect(mocks.enginePause).not.toHaveBeenCalled();
   });
 
-  it('waits for hidden pooled media before allowing destination narration', async () => {
+  it('includes hidden pooled frames in the lecture preflight', async () => {
     let finish!: (silent: boolean) => void;
-    mocks.hiddenFrameMessage.mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
+    mocks.hiddenFrameMessage.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
     await renderOwner();
     let settled = false;
     const guard = mocks.engineOptions!.beforeSpeech!().then((silent) => {
@@ -787,316 +768,11 @@ describe('PlaybackChromeRoot element-reference ownership', () => {
       return silent;
     });
     await Promise.resolve();
-    expect(mocks.hiddenFrameMessage).toHaveBeenCalledWith('maic:media:control:v1', {});
     expect(settled).toBe(false);
+    expect(mocks.sendFrameMessage).toHaveBeenCalledWith('maic:media:control:v1', {});
+    expect(mocks.hiddenFrameMessage).toHaveBeenCalledWith('maic:media:control:v1', {});
     finish(false);
     expect(await guard).toBe(false);
-  });
-
-  it('keeps the engine live while pausing and resuming discussion media', async () => {
-    mocks.engineMode = 'live';
-    mocks.pauseActiveLiveBuffer.mockReturnValue(true);
-    const ownerRef = createRef<PlaybackChromeRootHandle>();
-    await renderOwner({ ref: ownerRef });
-    act(() => ownerRef.current?.pauseForInteractiveMedia());
-    expect(mocks.enginePause).not.toHaveBeenCalled();
-    expect(mocks.pauseActiveLiveBuffer).toHaveBeenCalledWith(true);
-    expect(mocks.discussionPause).toHaveBeenCalledOnce();
-    await act(async () => (mocks.roundtableProps?.onDiscussionResume as () => Promise<void>)());
-    expect(mocks.engineMode).toBe('live');
-  });
-
-  it.each(['playing', 'live', 'paused', 'idle'] as const)(
-    'pauses the retained lecture buffer only during lecture playback (%s)',
-    async (mode) => {
-      const ownerRef = createRef<PlaybackChromeRootHandle>();
-      await renderOwner({ ref: ownerRef });
-      await act(async () => (mocks.roundtableProps?.onPlayPause as () => Promise<void>)());
-      expect(mocks.startLecture).toHaveBeenCalledOnce();
-      mocks.engineMode = mode;
-      mocks.pauseActiveLiveBuffer.mockReturnValue(mode === 'live');
-      act(() => ownerRef.current?.pauseForInteractiveMedia());
-      if (mode === 'playing') {
-        expect(mocks.enginePause).toHaveBeenCalledOnce();
-        expect(mocks.pauseBuffer).toHaveBeenCalledExactlyOnceWith('lecture-1');
-      } else {
-        expect(mocks.enginePause).not.toHaveBeenCalled();
-        expect(mocks.pauseBuffer).not.toHaveBeenCalled();
-      }
-      expect(mocks.pauseActiveLiveBuffer).toHaveBeenCalledOnce();
-      if (mode === 'live') expect(mocks.discussionPause).toHaveBeenCalledOnce();
-    },
-  );
-
-  it('exposes a failed discussion silence check as a paused live buffer with working retry', async () => {
-    mocks.engineMode = 'live';
-    await renderOwner();
-    act(() => mocks.discussionOptions?.onPlaybackBlocked?.());
-    expect(mocks.pauseActiveLiveBuffer).toHaveBeenCalledOnce();
-    expect(mocks.roundtableProps?.isDiscussionPaused).toBe(true);
-    expect(mocks.enginePause).not.toHaveBeenCalled();
-    mocks.discussionResume.mockResolvedValueOnce(false);
-    await act(async () => (mocks.roundtableProps?.onDiscussionResume as () => Promise<void>)());
-    expect(mocks.roundtableProps?.isDiscussionPaused).toBe(true);
-    expect(mocks.resumeActiveLiveBuffer).not.toHaveBeenCalled();
-    await act(async () => (mocks.roundtableProps?.onDiscussionResume as () => Promise<void>)());
-    expect(mocks.resumeActiveLiveBuffer).toHaveBeenCalledOnce();
-    expect(mocks.roundtableProps?.isDiscussionPaused).toBe(false);
-    expect(mocks.engineMode).toBe('live');
-  });
-
-  it('does not mark lecture UI as discussion-paused when no live session was paused', async () => {
-    mocks.engineMode = 'playing';
-    mocks.pauseActiveLiveBuffer.mockReturnValue(false);
-    await renderOwner();
-    act(() => mocks.discussionOptions?.onPlaybackBlocked?.());
-    expect(mocks.roundtableProps?.isDiscussionPaused).toBe(false);
-    expect(mocks.enginePause).not.toHaveBeenCalled();
-  });
-
-  it.each([true, false])(
-    'does not clear a media pause on a live reply until silence is confirmed (%s)',
-    async (silent) => {
-      mocks.engineMode = 'live';
-      mocks.pauseActiveLiveBuffer.mockReturnValue(true);
-      const ownerRef = createRef<PlaybackChromeRootHandle>();
-      await renderOwner({ ref: ownerRef });
-      act(() => ownerRef.current?.pauseForInteractiveMedia());
-      expect(settingsState.ttsEnabled).toBe(false);
-      let finish!: (value: boolean) => void;
-      mocks.sendFrameMessage.mockReturnValue(
-        new Promise((resolve) => {
-          finish = resolve;
-        }),
-      );
-      let sending!: Promise<void>;
-      await act(async () => {
-        sending = (mocks.roundtableProps!.onMessageSend as (text: string) => Promise<void>)(
-          'A live reply',
-        );
-      });
-      expect(mocks.sendMessage).toHaveBeenCalledOnce();
-      expect(mocks.resumeActiveLiveBuffer).not.toHaveBeenCalled();
-      expect(mocks.roundtableProps?.isDiscussionPaused).toBe(true);
-      await act(async () => {
-        finish(silent);
-        await sending;
-      });
-      expect(mocks.resumeActiveLiveBuffer).toHaveBeenCalledTimes(silent ? 1 : 0);
-      expect(mocks.roundtableProps?.isDiscussionPaused).toBe(!silent);
-    },
-  );
-
-  it.each(['media', 'input', 'pause', 'stop', 'scene'] as const)(
-    'ignores a live reply silence result after a newer %s intent',
-    async (intent) => {
-      mocks.engineMode = 'live';
-      mocks.pauseActiveLiveBuffer.mockReturnValue(true);
-      const ownerRef = createRef<PlaybackChromeRootHandle>();
-      await renderOwner({ ref: ownerRef });
-      let finish!: (silent: boolean) => void;
-      mocks.sendFrameMessage.mockReturnValue(
-        new Promise((resolve) => {
-          finish = resolve;
-        }),
-      );
-      let sending!: Promise<void>;
-      await act(async () => {
-        sending = (mocks.roundtableProps!.onMessageSend as (text: string) => Promise<void>)(
-          'A reply',
-        );
-      });
-      await act(async () => {
-        if (intent === 'media') ownerRef.current!.pauseForInteractiveMedia();
-        if (intent === 'input') (mocks.roundtableProps!.onInputActivate as () => void)();
-        if (intent === 'pause') (mocks.roundtableProps!.onDiscussionPause as () => void)();
-        if (intent === 'stop')
-          await (mocks.roundtableProps!.onStopDiscussion as () => Promise<void>)();
-        if (intent === 'scene') {
-          stageState.currentSceneId = 'next-scene';
-          await rerenderOwner();
-        }
-      });
-      await act(async () => {
-        finish(true);
-        await sending;
-      });
-      expect(mocks.sendMessage).toHaveBeenCalledOnce();
-      expect(mocks.resumeActiveLiveBuffer).not.toHaveBeenCalled();
-    },
-  );
-
-  it('lets only the latest live reply release its buffered response', async () => {
-    mocks.engineMode = 'live';
-    await renderOwner();
-    let first!: (silent: boolean) => void;
-    let second!: (silent: boolean) => void;
-    mocks.sendFrameMessage
-      .mockReturnValueOnce(
-        new Promise((resolve) => {
-          first = resolve;
-        }),
-      )
-      .mockReturnValueOnce(
-        new Promise((resolve) => {
-          second = resolve;
-        }),
-      );
-    let sendingFirst!: Promise<void>;
-    let sendingSecond!: Promise<void>;
-    await act(async () => {
-      const send = mocks.roundtableProps!.onMessageSend as (text: string) => Promise<void>;
-      sendingFirst = send('First question');
-      sendingSecond = send('Second question');
-    });
-    expect(mocks.sendMessage).toHaveBeenCalledTimes(2);
-    await act(async () => {
-      first(true);
-      await sendingFirst;
-    });
-    expect(mocks.resumeActiveLiveBuffer).not.toHaveBeenCalled();
-    await act(async () => {
-      second(true);
-      await sendingSecond;
-    });
-    expect(mocks.resumeActiveLiveBuffer).toHaveBeenCalledOnce();
-  });
-
-  it('does not start TTS after manual pause supersedes a pending resume', async () => {
-    mocks.engineMode = 'live';
-    await renderOwner();
-    let finish!: (silent: boolean) => void;
-    mocks.sendFrameMessage.mockReturnValueOnce(
-      new Promise((resolve) => {
-        finish = resolve;
-      }),
-    );
-    let resuming!: Promise<void>;
-    await act(async () => {
-      resuming = (mocks.roundtableProps!.onDiscussionResume as () => Promise<void>)();
-    });
-    act(() => (mocks.roundtableProps!.onDiscussionPause as () => void)());
-    await act(async () => {
-      finish(true);
-      await resuming;
-    });
-    expect(mocks.discussionResume).not.toHaveBeenCalled();
-    expect(mocks.resumeActiveLiveBuffer).not.toHaveBeenCalled();
-  });
-
-  it('keeps manual discussion resume paused when media cannot confirm silence with TTS disabled', async () => {
-    mocks.engineMode = 'live';
-    await renderOwner();
-    act(() => mocks.discussionOptions?.onPlaybackBlocked?.());
-    mocks.sendFrameMessage.mockResolvedValueOnce(false);
-    await act(async () => (mocks.roundtableProps!.onDiscussionResume as () => Promise<void>)());
-    expect(mocks.discussionResume).not.toHaveBeenCalled();
-    expect(mocks.resumeActiveLiveBuffer).not.toHaveBeenCalled();
-    expect(mocks.roundtableProps!.isDiscussionPaused).toBe(true);
-    await act(async () => (mocks.roundtableProps!.onDiscussionResume as () => Promise<void>)());
-    expect(mocks.resumeActiveLiveBuffer).toHaveBeenCalledOnce();
-  });
-
-  it.each([true, false])(
-    'gates a visible proactive Join on iframe silence with TTS disabled (%s)',
-    async (silent) => {
-      mocks.engineMode = 'playing';
-      mocks.enginePause.mockImplementation(() => {
-        mocks.engineMode = 'paused';
-      });
-      mocks.pauseActiveLiveBuffer.mockReturnValue(false);
-      const ownerRef = createRef<PlaybackChromeRootHandle>();
-      await renderOwner({ ref: ownerRef });
-      act(() =>
-        mocks.engineOptions?.onProactiveShow?.({
-          id: 'join',
-          question: 'Discuss',
-          agentId: 'teacher',
-        }),
-      );
-      act(() => ownerRef.current!.pauseForInteractiveMedia());
-      expect(mocks.engineMode).toBe('paused');
-      expect(mocks.pauseActiveLiveBuffer).toHaveBeenCalledWith(false);
-      expect(settingsState.ttsEnabled).toBe(false);
-      let finish!: (value: boolean) => void;
-      mocks.sendFrameMessage.mockReturnValueOnce(
-        new Promise((resolve) => {
-          finish = resolve;
-        }),
-      );
-      let joining!: Promise<void>;
-      await act(async () => {
-        joining = (mocks.roundtableProps!.onDiscussionStart as () => Promise<void>)();
-      });
-      expect(mocks.confirmDiscussion).not.toHaveBeenCalled();
-      await act(async () => {
-        finish(silent);
-        await joining;
-      });
-      expect(mocks.confirmDiscussion).toHaveBeenCalledTimes(silent ? 1 : 0);
-      if (!silent) {
-        await act(async () => (mocks.roundtableProps!.onDiscussionStart as () => Promise<void>)());
-        expect(mocks.confirmDiscussion).toHaveBeenCalledOnce();
-      }
-    },
-  );
-
-  it.each(['hide', 'show', 'scene', 'media', 'pause'] as const)(
-    'discards a pending proactive Join after a newer %s intent',
-    async (intent) => {
-      mocks.engineMode = 'paused';
-      const ownerRef = createRef<PlaybackChromeRootHandle>();
-      await renderOwner({ ref: ownerRef });
-      act(() =>
-        mocks.engineOptions?.onProactiveShow?.({ id: 'old', question: 'Old', agentId: 'teacher' }),
-      );
-      let finish!: (value: boolean) => void;
-      mocks.sendFrameMessage.mockReturnValueOnce(
-        new Promise((resolve) => {
-          finish = resolve;
-        }),
-      );
-      let joining!: Promise<void>;
-      await act(async () => {
-        joining = (mocks.roundtableProps!.onDiscussionStart as () => Promise<void>)();
-      });
-      await act(async () => {
-        if (intent === 'hide') (mocks.roundtableProps!.onDiscussionSkip as () => void)();
-        if (intent === 'show')
-          mocks.engineOptions?.onProactiveShow?.({
-            id: 'new',
-            question: 'New',
-            agentId: 'teacher',
-          });
-        if (intent === 'scene') {
-          stageState.currentSceneId = secondScene.id;
-          await rerenderOwner();
-        }
-        if (intent === 'media') ownerRef.current!.pauseForInteractiveMedia();
-        if (intent === 'pause') {
-          mocks.engineMode = 'playing';
-          mocks.enginePause.mockImplementation(() => {
-            mocks.engineMode = 'paused';
-          });
-          await (mocks.roundtableProps!.onPlayPause as () => Promise<void>)();
-          expect(mocks.engineMode).toBe('paused');
-        }
-      });
-      await act(async () => {
-        finish(true);
-        await joining;
-      });
-      expect(mocks.confirmDiscussion).not.toHaveBeenCalled();
-    },
-  );
-  it('keeps proactive Join retryable after a media guard rejection', async () => {
-    mocks.engineMode = 'paused';
-    await renderOwner();
-    mocks.sendFrameMessage.mockRejectedValueOnce(new Error('unavailable frame'));
-    await act(async () => (mocks.roundtableProps!.onDiscussionStart as () => Promise<void>)());
-    expect(mocks.confirmDiscussion).not.toHaveBeenCalled();
-    await act(async () => (mocks.roundtableProps!.onDiscussionStart as () => Promise<void>)());
-    expect(mocks.confirmDiscussion).toHaveBeenCalledOnce();
   });
 
   it('owns an Interactive identity delivered through the Stage sibling seam', async () => {

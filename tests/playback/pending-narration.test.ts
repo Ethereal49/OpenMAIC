@@ -89,7 +89,9 @@ it.each(['bytes', 'fetch', 'play'])(
       else if (stage === 'play') expect(Media.last?.play).toHaveBeenCalledOnce();
       else expect(bytes).toHaveBeenCalledOnce();
     });
+    expect(engine.isNarrating()).toBe(true);
     engine.pause();
+    expect(engine.isNarrating()).toBe(false);
     expect(engine.getSnapshot().actionIndex).toBe(0);
     if (stage === 'fetch')
       expect((fetch.mock.calls[0] as unknown as [string, RequestInit])[1].signal?.aborted).toBe(

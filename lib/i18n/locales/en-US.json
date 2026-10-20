@@ -248,10 +248,6 @@
         "audioMetadata": "Audio (metadata only)"
       }
     },
-    "externalInteractive": {
-      "open": "Open interactive page (pauses narration)",
-      "reloadHint": "Resuming narration or leaving this scene closes the external page. Opening it again reloads it."
-    },
     "interactiveRuntimeError": {
       "title": "This interactive failed to run",
       "dismiss": "Dismiss"

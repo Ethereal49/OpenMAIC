@@ -1,6 +1,5 @@
 import { mediaBridgeScript } from '@/lib/interactive/media-bridge';
 import { injectIntoDocumentHead } from './html-document';
-import { parse, type DefaultTreeAdapterTypes } from 'parse5';
 import {
   withObservationResponder,
   type ObservationIdentity,
@@ -389,66 +388,6 @@ const ELEMENT_PICKER_SHIM = `<script data-iframe-element-picker-shim>
  * Omitted by consumers that produce standalone documents (video export), where
  * no parent ever asks and the bytes count against an export size cap.
  */
-const MAX_MEDIA_SRCDOC_DEPTH = 4;
-
-function patchNestedMedia(
-  html: string,
-  documentId: string,
-  depth = 0,
-): { html: string; unobservable: boolean } {
-  const patches: Array<{ start: number; end: number; replacement: string }> = [];
-  let childIndex = 0;
-  let unobservable = false;
-  const nodes: DefaultTreeAdapterTypes.Node[] = [parse(html, { sourceCodeLocationInfo: true })];
-  while (nodes.length) {
-    const node = nodes.pop()!;
-    if ('tagName' in node && node.tagName === 'template') {
-      const mode = node.attrs.find((attr) => attr.name === 'shadowrootmode')?.value.toLowerCase();
-      // A scoped registry can prevent the root marker from upgrading; do not acknowledge silence.
-      if (
-        mode === 'closed' &&
-        node.attrs.some((attr) => attr.name === 'shadowrootcustomelementregistry')
-      )
-        unobservable = true;
-      const offset = node.sourceCodeLocation?.startTag?.endOffset;
-      if ((mode === 'open' || mode === 'closed') && offset !== undefined) {
-        const tag = `maic-media-root-${documentId.toLowerCase()}`;
-        patches.push({
-          start: offset,
-          end: offset,
-          replacement: `<${tag} data-maic-shadow-root></${tag}>`,
-        });
-      }
-    }
-    if ('tagName' in node && node.tagName === 'iframe') {
-      const srcdoc = node.attrs.find((attr) => attr.name === 'srcdoc');
-      const range = node.sourceCodeLocation?.attrs?.srcdoc;
-      const sandbox = node.attrs.find((attr) => attr.name === 'sandbox');
-      const scriptsAllowed =
-        !sandbox || /(?:^|[\t\n\f\r ])allow-scripts(?:[\t\n\f\r ]|$)/i.test(sandbox.value);
-      if (srcdoc && range && scriptsAllowed && depth < MAX_MEDIA_SRCDOC_DEPTH) {
-        const childId = `${documentId.slice(0, 100)}_${++childIndex}`;
-        const nested = patchNestedMedia(srcdoc.value, childId, depth + 1);
-        const child = injectIntoDocumentHead(
-          nested.html,
-          mediaBridgeScript(childId, nested.unobservable),
-        );
-        patches.push({
-          start: range.startOffset,
-          end: range.endOffset,
-          replacement: `srcdoc="${child.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}"`,
-        });
-      }
-    }
-    if ('content' in node) nodes.push(node.content);
-    if ('childNodes' in node)
-      for (let i = node.childNodes.length - 1; i >= 0; i--) nodes.push(node.childNodes[i]);
-  }
-  for (const patch of patches.sort((a, b) => b.start - a.start))
-    html = html.slice(0, patch.start) + patch.replacement + html.slice(patch.end);
-  return { html, unobservable };
-}
-
 export function patchHtmlForIframe(
   html: string,
   observation?: ObservationIdentity,
@@ -468,7 +407,6 @@ export function patchHtmlForIframe(
   body { min-height: 100vh; }
 </style>`;
 
-  const media = mediaId ? patchNestedMedia(html, mediaId) : { html, unobservable: false };
   const injection =
     '\n' +
     ERROR_CAPTURE_SHIM +
@@ -477,11 +415,11 @@ export function patchHtmlForIframe(
     '\n' +
     STORAGE_SHIM +
     '\n' +
-    (mediaId ? mediaBridgeScript(mediaId, media.unobservable) : '') +
+    (mediaId ? mediaBridgeScript(mediaId) : '') +
     '\n' +
     iframeCss;
 
-  const patched = injectIntoDocumentHead(media.html, injection);
+  const patched = injectIntoDocumentHead(html, injection);
   // Body end, not head: the reader captures the scope element as it installs.
   return observation ? withObservationResponder(patched, observation) : patched;
 }

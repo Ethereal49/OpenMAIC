@@ -248,10 +248,6 @@
         "audioMetadata": "音频（仅引用元数据）"
       }
     },
-    "externalInteractive": {
-      "open": "打开交互页面（暂停旁白）",
-      "reloadHint": "恢复旁白或离开本场景会关闭外部页面，再次打开时将重新加载。"
-    },
     "interactiveRuntimeError": {
       "title": "这个互动未能运行",
       "dismiss": "关闭"

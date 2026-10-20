@@ -307,7 +307,6 @@ export class VideoRegistry {
 export class WidgetChannel {
   private frame: HTMLIFrameElement | null = null;
   private loaded = false;
-  private loadGeneration = 0;
   private mediaSession: ReturnType<typeof createInteractiveMediaSession> | null = null;
   onMediaPlay: (() => void) | null = null;
 
@@ -331,20 +330,9 @@ export class WidgetChannel {
     this.queue = [];
   }
 
-  async markLoaded(frame: HTMLIFrameElement): Promise<void> {
+  markLoaded(frame: HTMLIFrameElement): void {
     if (frame !== this.frame) return;
-    const load = ++this.loadGeneration;
-    const session = this.mediaSession;
-    const source = frame.srcdoc;
-    this.loaded = false;
-    if (session && !(await session.loaded())) return;
-    if (
-      load !== this.loadGeneration ||
-      frame !== this.frame ||
-      session !== this.mediaSession ||
-      source !== frame.srcdoc
-    )
-      return;
+    this.mediaSession?.loaded();
     this.loaded = true;
     const pending = this.queue;
     this.queue = [];

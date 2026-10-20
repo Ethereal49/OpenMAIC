@@ -250,28 +250,19 @@ test.describe('Generation runs', () => {
     page,
     mockApi,
   }) => {
-    let releaseFirstScene!: () => void;
-    const firstSceneBarrier = new Promise<void>((resolve) => {
-      releaseFirstScene = resolve;
-    });
-    const run = await mockApi.setupGenerationMocks({ firstSceneBarrier });
-    try {
-      await startFromHome(page);
-      const preview = new GenerationPreviewPage(page);
-      await preview.waitForRedirectToClassroom();
-      const scenes = page.locator('[data-testid="scene-item"]');
-      await expect(scenes.first()).toBeVisible({ timeout: 15_000 });
-      // Generating: the Pro switch shows, disabled.
-      await expect(page.getByRole('switch')).toBeDisabled();
-      releaseFirstScene();
-      // The second scene arrives while the classroom is open.
-      await expect(scenes).toHaveCount(2, { timeout: 15_000 });
-      // Completed: editable.
-      await expect(page.getByRole('switch')).toBeEnabled({ timeout: 15_000 });
-      expect(page.url()).toContain(run.stageId);
-    } finally {
-      releaseFirstScene();
-    }
+    const run = await mockApi.setupGenerationMocks();
+    await startFromHome(page);
+    const preview = new GenerationPreviewPage(page);
+    await preview.waitForRedirectToClassroom();
+    const scenes = page.locator('[data-testid="scene-item"]');
+    await expect(scenes.first()).toBeVisible({ timeout: 15_000 });
+    // Generating: the Pro switch shows, disabled.
+    await expect(page.getByRole('switch')).toBeDisabled();
+    // The second scene arrives while the classroom is open.
+    await expect(scenes).toHaveCount(2, { timeout: 15_000 });
+    // Completed: editable.
+    await expect(page.getByRole('switch')).toBeEnabled({ timeout: 15_000 });
+    expect(page.url()).toContain(run.stageId);
   });
 
   test('a failed first scene pauses with Retry, and Retry resumes the run', async ({

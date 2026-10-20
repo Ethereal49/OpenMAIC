@@ -248,10 +248,6 @@
         "audioMetadata": "Audio (solo metadatos)"
       }
     },
-    "externalInteractive": {
-      "open": "Abrir página interactiva (pausa la narración)",
-      "reloadHint": "Al reanudar la narración o salir de esta escena, se cierra la página externa. Al abrirla de nuevo, se vuelve a cargar."
-    },
     "interactiveRuntimeError": {
       "title": "Esta actividad interactiva no se pudo ejecutar",
       "dismiss": "Cerrar"

@@ -159,7 +159,7 @@ export class PlaybackEngine {
     this.pendingNavigationSpeechIndex = null;
     this.invalidatePlaybackGeneration();
     this.setMode('playing');
-    this.processNext(this.playbackGeneration, true);
+    this.processNext(this.playbackGeneration);
   }
 
   /** idle → playing (continue from current position, e.g. after discussion end) */
@@ -170,7 +170,7 @@ export class PlaybackEngine {
     }
     this.invalidatePlaybackGeneration();
     this.setMode('playing');
-    this.processNext(this.playbackGeneration, true);
+    this.processNext(this.playbackGeneration);
   }
 
   canJumpToAction(actionIndex: number): boolean {
@@ -222,6 +222,18 @@ export class PlaybackEngine {
     return true;
   }
 
+  isNarrating(): boolean {
+    return (
+      this.mode === 'playing' &&
+      !!(
+        this.pendingSpeech ||
+        this.audioPlayer.hasActiveAudio() ||
+        this.browserTTSActive ||
+        this.speechTimer
+      )
+    );
+  }
+
   /** playing → paused | live → paused (abort SSE, truncate, topic pending) */
   pause(): void {
     if (this.mode === 'playing') {
@@ -235,9 +247,6 @@ export class PlaybackEngine {
       if (this.triggerDelayTimer) {
         clearTimeout(this.triggerDelayTimer);
         this.triggerDelayTimer = null;
-        // Requeue the discussion whose card has not appeared yet.
-        this.actionIndex--;
-        this.actionRewound = true;
       }
       if (this.speechTimer) {
         // Save remaining time so resume() can reschedule
@@ -290,11 +299,10 @@ export class PlaybackEngine {
       this.currentTopicState = 'active';
       this.setMode('live');
     } else {
-      // Resume lecture, including a retained discussion card.
       this.setMode('playing');
       const generation = this.playbackGeneration;
-      if (this.callbacks.beforeSpeech && !(await this.waitForMedia(generation))) return;
       if (this.currentTrigger) return;
+      if (this.callbacks.beforeSpeech && !(await this.waitForMedia(generation))) return;
       if (this.browserTTSPausedChunks.length > 0) {
         // Browser TTS was paused via cancel — re-speak remaining chunks
         this.browserTTSActive = true;
@@ -588,14 +596,12 @@ export class PlaybackEngine {
 
   private async waitForMedia(generation: number): Promise<boolean> {
     if (this.callbacks.beforeSpeech) {
-      this.callbacks.onPlaybackReadyChange?.(false);
       const silent = await this.callbacks.beforeSpeech();
       if (this.mode !== 'playing' || !this.isCurrentGeneration(generation)) return false;
       if (!silent) {
         this.pause();
         return false;
       }
-      this.callbacks.onPlaybackReadyChange?.(true);
     }
     return this.mode === 'playing' && this.isCurrentGeneration(generation);
   }
@@ -603,10 +609,7 @@ export class PlaybackEngine {
   /**
    * Core processing loop: consume the next action.
    */
-  private async processNext(
-    generation: number = this.playbackGeneration,
-    checkMediaBeforeAction = false,
-  ): Promise<void> {
+  private async processNext(generation: number = this.playbackGeneration): Promise<void> {
     if (this.mode !== 'playing' || !this.isCurrentGeneration(generation)) return;
 
     // Check for scene boundary (fire scene change callback at start of each new scene)
@@ -647,7 +650,7 @@ export class PlaybackEngine {
     const actionIndex = this.actionIndex;
     const pending = action.type === 'speech' ? { generation, actionIndex } : null;
     this.pendingSpeech = pending;
-    if ((action.type === 'speech' || checkMediaBeforeAction) && this.callbacks.beforeSpeech) {
+    if (action.type === 'speech' && this.callbacks.beforeSpeech) {
       // The cursor still belongs to this unconsumed action during its asynchronous guard.
       this.actionRewound = true;
       if (!(await this.waitForMedia(generation))) return;

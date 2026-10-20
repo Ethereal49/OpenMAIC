@@ -248,10 +248,6 @@
         "audioMetadata": "音声（メタデータのみ）"
       }
     },
-    "externalInteractive": {
-      "open": "インタラクティブページを開く（ナレーションを一時停止）",
-      "reloadHint": "ナレーションの再開またはこのシーンからの移動で外部ページを閉じます。再度開くとページが再読み込みされます。"
-    },
     "interactiveRuntimeError": {
       "title": "このインタラクティブは実行できませんでした",
       "dismiss": "閉じる"

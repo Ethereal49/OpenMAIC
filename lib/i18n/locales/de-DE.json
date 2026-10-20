@@ -248,10 +248,6 @@
         "audioMetadata": "Audio (nur Metadaten)"
       }
     },
-    "externalInteractive": {
-      "open": "Interaktive Seite öffnen (pausiert die Sprachausgabe)",
-      "reloadHint": "Beim Fortsetzen der Sprachausgabe oder Verlassen dieser Szene wird die externe Seite geschlossen. Beim erneuten Öffnen wird sie neu geladen."
-    },
     "interactiveRuntimeError": {
       "title": "Diese Interaktion konnte nicht ausgeführt werden",
       "dismiss": "Schließen"
