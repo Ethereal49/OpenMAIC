@@ -64,9 +64,25 @@ const activity = `<button id="audio" onclick="document.querySelector('audio').pl
 <button id="video" onclick="document.querySelector('video').play()">Video</button><video src="${audio}" loop></video>
 <button id="detached" onclick="detached.play()">Detached Audio</button>
 <button id="autoplay" onclick="detached.autoplay=true;detached.src='${audio}'">Native autoplay</button>
-<button id="context" onclick="if(!window.ctx){ctx=new AudioContext();const o=ctx.createOscillator();o.connect(ctx.destination);o.start();ctx.resume()}">WebAudio</button>
+<button id="context" onclick="playContext('oscillator',false)">WebAudio</button>
+<button id="short-oscillator" onclick="playContext('oscillator',true)">Short oscillator</button>
+<button id="short-buffer" onclick="playContext('buffer',true)">Short buffer</button>
+<button id="silent" onclick="window.silentClicks=(window.silentClicks||0)+1">Silent button</button><input id="silent-key">
 <form action="http://localhost/without-media-bridge"><button id="navigate">Navigate</button></form>
-<script>window.detached=new Audio(${JSON.stringify(audio)});detached.loop=true;window.explicitPlayCalls=0;const originalPlay=HTMLMediaElement.prototype.play;HTMLMediaElement.prototype.play=function(){explicitPlayCalls++;return originalPlay.apply(this,arguments)};</script>`;
+<script>window.playContext=(kind,short)=>{
+  if(!window.ctx){window.ctx=new AudioContext();ctx.resume()}
+  const source=kind==='buffer'?ctx.createBufferSource():ctx.createOscillator();
+  if(kind==='buffer'){
+    source.buffer=ctx.createBuffer(1,Math.ceil(ctx.sampleRate*.1),ctx.sampleRate);
+    const samples=source.buffer.getChannelData(0);
+    for(let i=0;i<samples.length;i++)samples[i]=.25*Math.sin(i*2*Math.PI*440/ctx.sampleRate);
+  }
+  source.connect(ctx.destination);
+  source.onended=()=>{window.sourceEnds=(window.sourceEnds||0)+1};
+  window.sourceStarts=(window.sourceStarts||0)+1;
+  if(kind==='buffer')source.start(0,0,.05);
+  else {source.start();if(short)source.stop(ctx.currentTime+.05)}
+};window.detached=new Audio(${JSON.stringify(audio)});detached.loop=true;window.explicitPlayCalls=0;const originalPlay=HTMLMediaElement.prototype.play;HTMLMediaElement.prototype.play=function(){explicitPlayCalls++;return originalPlay.apply(this,arguments)};</script>`;
 const playbackPath = 'components/edit/PlaybackChromeRoot.tsx';
 const hostPath = 'components/scene-renderers/InteractiveIframeHost.tsx';
 function bundle(surface: 'app' | 'standalone'): string {
@@ -208,7 +224,7 @@ for (const surface of ['app', 'standalone'] as const) {
         expect(await frame.evaluate(active)).toBe(false);
       });
     }
-    test('resumes bridge-suspended WebAudio on a fresh trusted frame gesture', async ({ page }) => {
+    test('resumes bridge-suspended WebAudio only when a new source starts', async ({ page }) => {
       await page.frameLocator('iframe').locator('#context').click();
       const frame = page.frames()[1];
       await expect.poll(() => frame.evaluate('ctx.state')).toBe('running');
@@ -222,6 +238,35 @@ for (const surface of ['app', 'standalone'] as const) {
       await page.frameLocator('iframe').locator('#context').click();
       expect(await frame.evaluate('ctx.state')).toBe('suspended');
     });
+    for (const kind of ['oscillator', 'buffer']) {
+      test(`silent input after a short ${kind} does not interrupt narration`, async ({ page }) => {
+        await narrate(page);
+        const frame = page.frames()[1];
+        await page
+          .frameLocator('iframe')
+          .locator('#short-' + kind)
+          .click();
+        await frame.waitForFunction('window.sourceEnds===1');
+        // A finished source leaves a native context running; state alone is not audible output.
+        expect(await frame.evaluate('ctx.state')).toBe('running');
+        await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+        await narrate(page);
+        expect(await frame.evaluate('ctx.state')).toBe('suspended');
+        await page.frameLocator('iframe').locator('#silent').click();
+        expect(await frame.evaluate('ctx.state')).toBe('suspended');
+        expect(await page.evaluate('narrating()')).toBe(true);
+        await page.frameLocator('iframe').locator('#silent-key').press('a');
+        expect(await frame.evaluate('ctx.state')).toBe('suspended');
+        expect(await frame.evaluate('sourceStarts')).toBe(1);
+        expect(await page.evaluate('narrating()')).toBe(true);
+        await page
+          .frameLocator('iframe')
+          .locator('#short-' + kind)
+          .click();
+        await expect.poll(() => frame.evaluate('ctx.state')).toBe('running');
+        await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+      });
+    }
     test('fails open after self-navigation and continues later lines without restoring srcdoc', async ({
       page,
     }) => {

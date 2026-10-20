@@ -47,21 +47,25 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
     state.suspended = null;
     state.resumeRequested = false;
   }
-  function gesture(event) {
-    if (!enabled || !event.isTrusted) return;
-    suspended.forEach(function (ref) {
-      var context = ref.deref();
-      if (!context) { suspended.delete(ref); return; }
-      var state = contextState.get(context);
-      if (context.state === 'closed') { forget(context); return; }
-      state.resumeRequested = true;
-      if (!state.pending) forget(context);
-      // Start in the user gesture; retry after an overlapping suspend settles.
-      state.resume.call(context).catch(function () {});
-    });
+  function resumeForSound(context) {
+    var state = contextState.get(context);
+    if (!enabled || !state || !state.suspended) return;
+    if (context.state === 'closed') { forget(context); return; }
+    state.resumeRequested = true;
+    if (!state.pending) forget(context);
+    // Resume in the start call; retry if an overlapping suspend settles later.
+    state.resume.call(context).catch(function () {});
   }
-  document.addEventListener('pointerdown', gesture, true);
-  document.addEventListener('keydown', gesture, true);
+  ['AudioScheduledSourceNode', 'AudioBufferSourceNode'].forEach(function (name) {
+    var Source = window[name];
+    if (!Source) return;
+    var start = Source.prototype.start;
+    Source.prototype.start = function () {
+      var result = start.apply(this, arguments);
+      resumeForSound(this.context);
+      return result;
+    };
+  });
   function changed() {
     if (!enabled) pause();
     report();

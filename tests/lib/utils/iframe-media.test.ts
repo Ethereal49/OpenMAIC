@@ -179,6 +179,24 @@ function bridgeFixture() {
       return Promise.resolve();
     }
   }
+  class Source {
+    started = false;
+    args: unknown[] = [];
+    constructor(readonly context: Context) {}
+    start(...args: unknown[]): void {
+      if (!(this instanceof Source)) throw new TypeError('Invalid source');
+      if (this.started) throw new Error('Already started');
+      if (typeof args[0] === 'number' && args[0] < 0) throw new RangeError('Invalid time');
+      this.started = true;
+      this.args = args;
+    }
+  }
+  const nativeStart = Source.prototype.start;
+  class BufferSource extends Source {
+    start(...args: unknown[]): void {
+      return nativeStart.apply(this, args);
+    }
+  }
   const parent = { postMessage: vi.fn() };
   const listeners: Record<string, (event: unknown) => void> = {};
   const doc = {
@@ -191,6 +209,8 @@ function bridgeFixture() {
     Audio: Media,
     AudioContext: Context,
     webkitAudioContext: Context,
+    AudioScheduledSourceNode: Source,
+    AudioBufferSourceNode: BufferSource,
     addEventListener: (type: string, listener: (event: unknown) => void) => {
       listeners[type] = listener;
     },
@@ -212,9 +232,11 @@ function bridgeFixture() {
     Media,
     Context: win.AudioContext,
     NativeContext: Context,
+    Source,
+    BufferSource,
     Audio: win.Audio,
     control,
-    gesture: (trusted = true) => listeners.pointerdown({ isTrusted: trusted }),
+    gesture: (trusted = true) => listeners.pointerdown?.({ isTrusted: trusted }),
     media: sets[0],
     contexts: sets[1],
     parent,
@@ -241,41 +263,81 @@ describe('main-document bridge', () => {
     control({ action: 'sync', enabled: false });
     expect(sound.paused).toBe(true);
   });
-  it('resumes only bridge-suspended contexts on a trusted, visible-frame gesture', async () => {
-    const { Context, control, gesture } = bridgeFixture();
+  it('ignores silent gestures and resumes only the context whose source starts', async () => {
+    const { Context, Source, control, gesture } = bridgeFixture();
     const sound = new Context();
+    const other = new Context();
     control({ action: 'pause', requestId: 1 });
     await Promise.resolve();
     await Promise.resolve();
-    expect(sound.state).toBe('suspended');
+    gesture();
     gesture(false);
     expect(sound.state).toBe('suspended');
-    control({ action: 'sync', enabled: false });
-    gesture();
-    expect(sound.state).toBe('suspended');
-    control({ action: 'sync', enabled: true });
-    gesture();
+    expect(other.state).toBe('suspended');
+    new Source(sound).start();
     expect(sound.state).toBe('running');
-    await sound.suspend();
-    gesture();
-    expect(sound.state).toBe('suspended');
-    await sound.close();
-    gesture();
-    expect(sound.state).toBe('closed');
+    expect(other.state).toBe('suspended');
   });
+  it.each(['source', 'buffer'] as const)(
+    'restores bridge-owned %s starts but respects authored suspend/close',
+    async (kind) => {
+      const { Context, Source, BufferSource, control } = bridgeFixture();
+      const Node = kind === 'buffer' ? BufferSource : Source;
+      const sound = new Context();
+      control({ action: 'pause', requestId: 1 });
+      await Promise.resolve();
+      await Promise.resolve();
+      const node = new Node(sound);
+      node.start(1, 2, 3);
+      expect(node.args).toEqual([1, 2, 3]);
+      expect(sound.state).toBe('running');
+      await sound.suspend();
+      new Node(sound).start();
+      expect(sound.state).toBe('suspended');
+      await sound.close();
+      new Node(sound).start();
+      expect(sound.state).toBe('closed');
+    },
+  );
   it.each(['suspend', 'close'] as const)(
-    'respects authored %s after bridge suspension',
+    'respects authored %s while the bridge owns the suspension',
     async (method) => {
-      const { Context, control, gesture } = bridgeFixture();
+      const { Context, Source, control } = bridgeFixture();
       const sound = new Context();
       control({ action: 'pause', requestId: 1 });
       await Promise.resolve();
       await Promise.resolve();
       await sound[method]();
-      gesture();
+      new Source(sound).start();
       expect(sound.state).toBe(method === 'close' ? 'closed' : 'suspended');
     },
   );
+  it('does not resume a hidden frame until a fresh source start after visibility returns', async () => {
+    const { Context, Source, control } = bridgeFixture();
+    const sound = new Context();
+    control({ action: 'sync', enabled: false });
+    await Promise.resolve();
+    await Promise.resolve();
+    new Source(sound).start();
+    expect(sound.state).toBe('suspended');
+    control({ action: 'sync', enabled: true });
+    expect(sound.state).toBe('suspended');
+    new Source(sound).start();
+    expect(sound.state).toBe('running');
+  });
+  it('preserves native start validation and does not resume after a rejected start', async () => {
+    const { Context, Source, control } = bridgeFixture();
+    const sound = new Context();
+    const used = new Source(sound);
+    used.start();
+    control({ action: 'pause', requestId: 1 });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(() => used.start()).toThrow('Already started');
+    expect(() => new Source(sound).start(-1)).toThrow(RangeError);
+    expect(() => Source.prototype.start.call({} as InstanceType<typeof Source>)).toThrow(TypeError);
+    expect(sound.state).toBe('suspended');
+  });
   it('releases inactive contexts and tracks constructor aliases and subclasses', async () => {
     const { Context, contexts, control } = bridgeFixture();
     expect(Object.getOwnPropertyDescriptor(Context.prototype, 'constructor')).toMatchObject({
@@ -297,15 +359,15 @@ describe('main-document bridge', () => {
     await derived.close();
     expect(contexts.has(derived)).toBe(false);
   });
-  it('preserves a trusted gesture racing an asynchronous bridge suspend', async () => {
-    const { Context, NativeContext, control, gesture } = bridgeFixture();
+  it('preserves a source start racing an asynchronous bridge suspend', async () => {
+    const { Context, NativeContext, Source, control } = bridgeFixture();
     let resolve!: () => void;
     NativeContext.pending = new Promise<void>((done) => {
       resolve = done;
     });
     const sound = new Context();
     control({ action: 'pause', requestId: 1 });
-    gesture();
+    new Source(sound).start();
     resolve();
     await new Promise((done) => setTimeout(done, 0));
     expect(sound.state).toBe('running');
