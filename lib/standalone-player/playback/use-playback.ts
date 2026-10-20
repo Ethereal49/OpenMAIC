@@ -28,6 +28,7 @@ export function usePlayback(
   navigate: (index: number) => void,
 ): Playback {
   const navigateRef = useRef(navigate);
+  const pendingStart = useRef<object | null>(null);
   useEffect(() => {
     navigateRef.current = navigate;
   }, [navigate]);
@@ -66,6 +67,7 @@ export function usePlayback(
 
   useEffect(
     () => () => {
+      pendingStart.current = null;
       widgets.attach(null);
       controller.dispose();
       narration.stop();
@@ -77,6 +79,7 @@ export function usePlayback(
   // Effects run after the commit, so the new scene's video elements and
   // iframe are registered before its actions start.
   useEffect(() => {
+    pendingStart.current = null;
     controller.sceneShown(index);
   }, [controller, index]);
 
@@ -85,21 +88,31 @@ export function usePlayback(
   useEffect(() => media.probeLinkedMedia(), [media]);
 
   const play = useCallback(async () => {
+    const request = {};
+    pendingStart.current = request;
     // Prime inside the gesture; the real clip waits for the frame to be silent.
     narration.prime();
     // Navigation unmounts the old frame; the destination guards its own narration.
     if (!controller.willNavigateOnPlay()) {
       const silence = widgets.pauseMedia();
-      if (silence !== true && !(await silence)) return;
+      if (silence !== true && !(await silence)) {
+        if (pendingStart.current === request) pendingStart.current = null;
+        return;
+      }
     }
+    if (pendingStart.current !== request) return;
+    pendingStart.current = null;
     videos.pauseManual();
     controller.play();
   }, [controller, narration, videos, widgets]);
+  const pause = useCallback(() => {
+    pendingStart.current = null;
+    controller.pause();
+  }, [controller]);
   const toggle = useCallback(() => {
-    if (controller.getState().mode === 'playing') controller.pause();
+    if (pendingStart.current || controller.getState().mode === 'playing') pause();
     else void play();
-  }, [controller, play]);
-  const pause = useCallback(() => controller.pause(), [controller]);
+  }, [controller, pause, play]);
   const dismissDiscussion = useCallback(() => controller.dismissDiscussion(), [controller]);
 
   return {

@@ -180,3 +180,52 @@ describe('standalone narration silence failures', () => {
     expect(NarrationPlayer.prototype.play).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('pending standalone start cancellation', () => {
+  it.each(['idle', 'paused'] as const)(
+    'a second toggle cancels the pending start from %s',
+    async (mode) => {
+      const silence = vi.mocked(WidgetChannel.prototype.pauseMedia);
+      silence.mockReset().mockReturnValue(true);
+      if (mode === 'paused') {
+        await act(async () => playback.play());
+        act(() => playback.pause());
+      }
+      vi.mocked(NarrationPlayer.prototype.play).mockClear();
+      let finish!: (silent: boolean) => void;
+      silence.mockReturnValue(
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+      );
+      act(() => playback.toggle());
+      act(() => playback.toggle());
+      await act(async () => finish(true));
+      expect(playback.state.mode).toBe(mode);
+      expect(NarrationPlayer.prototype.play).not.toHaveBeenCalled();
+    },
+  );
+  it.each(['pause', 'navigate'] as const)(
+    '%s cancels a pending play before its acknowledgement',
+    async (action) => {
+      const silence = vi.mocked(WidgetChannel.prototype.pauseMedia);
+      let finish!: (silent: boolean) => void;
+      silence.mockReset().mockReturnValue(
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+      );
+      act(() => {
+        void playback.play();
+      });
+      if (action === 'pause') act(() => playback.pause());
+      else {
+        index = 1;
+        await act(async () => root.render(createElement(Probe)));
+      }
+      await act(async () => finish(true));
+      expect(playback.state.mode).toBe('idle');
+      expect(NarrationPlayer.prototype.play).not.toHaveBeenCalled();
+    },
+  );
+});

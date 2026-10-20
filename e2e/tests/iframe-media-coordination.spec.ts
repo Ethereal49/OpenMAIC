@@ -88,7 +88,7 @@ import {usePlayback} from './lib/standalone-player/playback/use-playback';
 import {InteractiveScene} from './lib/standalone-player/scenes/InteractiveScene';
 const speech=[{id:'first',type:'speech',text:'First narration',audioRef:'narration'},{id:'second',type:'speech',text:'Second narration',audioRef:'narration'}];
 const scenes=[{type:'interactive',order:0,actions:speech,content:{type:'interactive'}},{type:'interactive',order:1,actions:speech,content:{type:'interactive'}}];
-function App(){const [index,setIndex]=useState(0);const p=usePlayback(scenes,index,setIndex);window.mode=()=>p.state.mode;window.caption=()=>p.state.view.caption;return <><button onClick={p.play}>Narrate</button><button onClick={p.pause}>Pause</button><button onClick={()=>setIndex(index?0:1)}>Navigate scene</button>{index===0&&<InteractiveScene html={html} strings={{}} title="test" widgets={p.widgets}/>}</>}
+function App(){const [index,setIndex]=useState(0);const p=usePlayback(scenes,index,setIndex);window.mode=()=>p.state.mode;window.caption=()=>p.state.view.caption;return <><button onClick={p.play}>Narrate</button><button onClick={p.pause}>Pause</button><button onClick={p.toggle}>Toggle</button><button onClick={()=>setIndex(index?0:1)}>Navigate scene</button>{index===0&&<InteractiveScene html={html} strings={{}} title="test" widgets={p.widgets}/>}</>}
 `
     : `
 import {PlaybackEngine} from './lib/playback/engine';
@@ -153,6 +153,23 @@ for (const surface of ['app', 'standalone'] as const) {
         }),
       );
       await page.goto('http://localhost/media-test');
+      await page.evaluate(`{
+        window.holdPauseACK=false;
+        window.addEventListener('message',event=>{
+          if(window.holdPauseACK && event.data?.type==='maic:media:state:v1' && event.data.requestId>0){
+            event.stopImmediatePropagation();
+            window.releasePauseACK=()=>new Promise(resolve=>{
+              window.holdPauseACK=false;
+              const frame=document.querySelector('iframe');
+              const accepted=answer=>{
+                if(answer.source===frame.contentWindow && answer.data?.type===event.data.type && answer.data.requestId===event.data.requestId){window.removeEventListener('message',accepted);resolve();}
+              };
+              window.addEventListener('message',accepted);
+              frame.contentWindow.postMessage({type:'maic:media:control:v1',documentId:event.data.documentId,generation:event.data.generation,action:'pause',requestId:event.data.requestId},'*');
+            });
+          }
+        },true);
+      }`);
       await page.addScriptTag({ content: bundle(surface) });
       await expect(page.frameLocator('iframe').locator('#audio')).toBeVisible();
     });
@@ -235,6 +252,17 @@ for (const surface of ['app', 'standalone'] as const) {
         await expect.poll(() => page.evaluate('narrating()')).toBe(true);
       }
     });
+    if (surface === 'standalone')
+      test('a second toggle cancels the pending silence acknowledgement', async ({ page }) => {
+        await page.evaluate('window.holdPauseACK=true');
+        await page.getByRole('button', { name: 'Toggle', exact: true }).click();
+        await expect.poll(() => page.evaluate('typeof releasePauseACK')).toBe('function');
+        expect(await page.evaluate('mode()')).toBe('idle');
+        await page.getByRole('button', { name: 'Toggle', exact: true }).click();
+        await page.evaluate('(async()=>{await releasePauseACK();await Promise.resolve();})()');
+        expect(await page.evaluate('mode()')).toBe('idle');
+        expect(await page.evaluate('narrating()')).toBe(false);
+      });
     if (surface === 'app')
       test('cancels a loading real AudioPlayer clip when frame media starts', async ({ page }) => {
         let release!: () => void;
