@@ -159,6 +159,9 @@ function bridgeFixture() {
   class Context extends EventTarget {
     static pending: Promise<void> | undefined;
     state = 'running';
+    createMediaElementSource(mediaElement: Media) {
+      return new ElementSource(this, { mediaElement });
+    }
     suspend() {
       const finish = () => {
         this.state = 'suspended';
@@ -197,6 +200,20 @@ function bridgeFixture() {
       return nativeStart.apply(this, args);
     }
   }
+  class Node {
+    constructor(readonly context: Context) {}
+    connect(destination: object) {
+      if (!(this instanceof Node)) throw new TypeError('Invalid node');
+      return destination;
+    }
+  }
+  class ElementSource extends Node {
+    readonly mediaElement: Media;
+    constructor(context: Context, options: { mediaElement: Media }) {
+      super(context);
+      this.mediaElement = options.mediaElement;
+    }
+  }
   const parent = { postMessage: vi.fn() };
   const listeners: Record<string, (event: unknown) => void> = {};
   const doc = {
@@ -211,6 +228,8 @@ function bridgeFixture() {
     webkitAudioContext: Context,
     AudioScheduledSourceNode: Source,
     AudioBufferSourceNode: BufferSource,
+    AudioNode: Node,
+    MediaElementAudioSourceNode: ElementSource,
     addEventListener: (type: string, listener: (event: unknown) => void) => {
       listeners[type] = listener;
     },
@@ -234,6 +253,8 @@ function bridgeFixture() {
     NativeContext: Context,
     Source,
     BufferSource,
+    ElementSource,
+    Node,
     Audio: win.Audio,
     control,
     gesture: (trusted = true) => listeners.pointerdown?.({ isTrusted: trusted }),
@@ -244,6 +265,45 @@ function bridgeFixture() {
 }
 
 describe('main-document bridge', () => {
+  it.each(['factory', 'constructor'] as const)(
+    'restores routed media created by %s without resuming unrelated or authored suspensions',
+    async (kind) => {
+      const { Context, Audio, ElementSource, Node, control } = bridgeFixture();
+      const context = new Context();
+      const other = new Context();
+      const sound = new Audio();
+      const source =
+        kind === 'factory'
+          ? context.createMediaElementSource(sound)
+          : new ElementSource(context, { mediaElement: sound });
+      const destination = {};
+      expect(source.connect(destination)).toBe(destination);
+      expect(() =>
+        Node.prototype.connect.call({} as InstanceType<typeof Node>, destination),
+      ).toThrow(TypeError);
+      await sound.play();
+      control({ action: 'pause', requestId: 1 });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(context.state).toBe('suspended');
+      await sound.play();
+      expect(context.state).toBe('running');
+      expect(other.state).toBe('suspended');
+      control({ action: 'sync', enabled: false });
+      await Promise.resolve();
+      await Promise.resolve();
+      await sound.play();
+      expect(context.state).toBe('suspended');
+      expect(sound.paused).toBe(true);
+      control({ action: 'sync', enabled: true });
+      await sound.play();
+      expect(context.state).toBe('running');
+      sound.pause();
+      await context.suspend();
+      await sound.play();
+      expect(context.state).toBe('suspended');
+    },
+  );
   it('tracks detached Audio(), pauses media and releases inactive elements', async () => {
     const { Audio, media, control, parent } = bridgeFixture();
     const sound = new Audio();

@@ -224,6 +224,44 @@ for (const surface of ['app', 'standalone'] as const) {
         expect(await frame.evaluate(active)).toBe(false);
       });
     }
+    for (const kind of ['audio', 'video', 'detached']) {
+      for (const factory of [true, false]) {
+        test(`restores routed ${kind} through ${factory ? 'factory' : 'constructor'} on playback`, async ({
+          page,
+        }) => {
+          const frame = page.frames()[1];
+          await frame.evaluate(`{
+            const element=${kind === 'detached' ? 'detached' : `document.querySelector('${kind}')`};
+            document.getElementById('${kind}').onclick=()=>{
+              if(!window.routedContext){
+                window.routedContext=new AudioContext();
+                const source=${factory ? 'routedContext.createMediaElementSource(element)' : 'new MediaElementAudioSourceNode(routedContext,{mediaElement:element})'};
+                source.connect(routedContext.destination);
+              }
+              element.play();
+            };
+          }`);
+          await narrate(page);
+          await page
+            .frameLocator('iframe')
+            .locator('#' + kind)
+            .click();
+          await expect.poll(() => frame.evaluate('routedContext.state')).toBe('running');
+          await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+          await narrate(page);
+          expect(await frame.evaluate('routedContext.state')).toBe('suspended');
+          await page.frameLocator('iframe').locator('#silent').click();
+          expect(await frame.evaluate('routedContext.state')).toBe('suspended');
+          expect(await page.evaluate('narrating()')).toBe(true);
+          await page
+            .frameLocator('iframe')
+            .locator('#' + kind)
+            .click();
+          await expect.poll(() => frame.evaluate('routedContext.state')).toBe('running');
+          await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+        });
+      }
+    }
     test('resumes bridge-suspended WebAudio only when a new source starts', async ({ page }) => {
       await page.frameLocator('iframe').locator('#context').click();
       const frame = page.frames()[1];

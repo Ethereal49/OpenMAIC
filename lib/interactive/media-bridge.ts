@@ -10,6 +10,7 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
   var contexts = new Set();
   var suspended = new Set();
   var contextState = new WeakMap();
+  var mediaContexts = new WeakMap();
   var enabled = true;
   var generation = 0;
   function report(requestId) {
@@ -66,6 +67,17 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
       return result;
     };
   });
+  var AudioNode = window.AudioNode;
+  var MediaSource = window.MediaElementAudioSourceNode;
+  if (AudioNode && MediaSource) {
+    var connect = AudioNode.prototype.connect;
+    AudioNode.prototype.connect = function () {
+      var result = connect.apply(this, arguments);
+      // Both factory and constructor-created media sources use this routing entry.
+      if (this instanceof MediaSource) mediaContexts.set(this.mediaElement, new WeakRef(this.context));
+      return result;
+    };
+  }
   function changed() {
     if (!enabled) pause();
     report();
@@ -73,7 +85,7 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
   function release(element) {
     if (!element.paused && !element.ended && !element.error) return;
     media.delete(element);
-    element.removeEventListener('play', changed);
+    element.removeEventListener('play', started);
     ['pause', 'ended', 'emptied', 'error'].forEach(function (type) {
       element.removeEventListener(type, stopped);
     });
@@ -85,7 +97,7 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
   function watch(element) {
     if (media.has(element)) return;
     media.add(element);
-    element.addEventListener('play', changed);
+    element.addEventListener('play', started);
     ['pause', 'ended', 'emptied', 'error'].forEach(function (type) {
       element.addEventListener(type, stopped);
     });
@@ -93,7 +105,11 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
   function started(event) {
     if (event.target instanceof HTMLMediaElement) {
       observe(event.target);
-      if (!event.target.paused && !event.target.ended && !event.target.error) watch(event.target);
+      if (!event.target.paused && !event.target.ended && !event.target.error) {
+        watch(event.target);
+        var ref = mediaContexts.get(event.target);
+        if (ref) resumeForSound(ref.deref());
+      }
       changed();
     }
   }
