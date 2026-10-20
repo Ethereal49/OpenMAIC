@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useSyncExternalStore,
+} from 'react';
 import type { ManifestScene } from '@/lib/export/classroom-zip-types';
 import { PlaybackController, type PlaybackState } from './controller';
 import { createMediaLibrary, firstLinkedImage, type MediaLibrary } from './media-library';
@@ -76,9 +83,8 @@ export function usePlayback(
     [controller, media, narration, widgets],
   );
 
-  // Effects run after the commit, so the new scene's video elements and
-  // iframe are registered before its actions start.
-  useEffect(() => {
+  // Refs are attached; cancel the old run before detached-frame promises continue.
+  useLayoutEffect(() => {
     pendingStart.current = null;
     controller.sceneShown(index);
   }, [controller, index]);

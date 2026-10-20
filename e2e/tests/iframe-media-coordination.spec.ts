@@ -104,7 +104,7 @@ import {usePlayback} from './lib/standalone-player/playback/use-playback';
 import {InteractiveScene} from './lib/standalone-player/scenes/InteractiveScene';
 const speech=[{id:'first',type:'speech',text:'First narration',audioRef:'narration'},{id:'second',type:'speech',text:'Second narration',audioRef:'narration'}];
 const scenes=[{type:'interactive',order:0,actions:speech,content:{type:'interactive'}},{type:'interactive',order:1,actions:speech,content:{type:'interactive'}}];
-function App(){const [index,setIndex]=useState(0);const p=usePlayback(scenes,index,setIndex);window.mode=()=>p.state.mode;window.caption=()=>p.state.view.caption;return <><button onClick={p.play}>Narrate</button><button onClick={p.pause}>Pause</button><button onClick={p.toggle}>Toggle</button><button onClick={()=>setIndex(index?0:1)}>Navigate scene</button>{index===0&&<InteractiveScene html={html} strings={{}} title="test" widgets={p.widgets}/>}</>}
+function App(){const [index,setIndex]=useState(0);const p=usePlayback(scenes,index,setIndex);window.navigateScene=()=>setIndex(index?0:1);window.mode=()=>p.state.mode;window.caption=()=>p.state.view.caption;return <><button onClick={p.play}>Narrate</button><button onClick={p.pause}>Pause</button><button onClick={p.toggle}>Toggle</button><button onClick={()=>setIndex(index?0:1)}>Navigate scene</button>{index===0&&<InteractiveScene html={html} strings={{}} title="test" widgets={p.widgets}/>}</>}
 `
     : `
 import {PlaybackEngine} from './lib/playback/engine';
@@ -297,6 +297,24 @@ for (const surface of ['app', 'standalone'] as const) {
         await expect.poll(() => page.evaluate('narrating()')).toBe(true);
       }
     });
+    if (surface === 'standalone')
+      test('continues narration after navigating away during a pending silence acknowledgement', async ({
+        page,
+      }) => {
+        await narrate(page);
+        const frame = page.frames()[1];
+        // End the first fixture clip explicitly, holding the next speech's ACK.
+        await page.evaluate(
+          'window.holdPauseACK=true;audios[0].pause();audios[0].dispatchEvent(new Event("ended"))',
+        );
+        await expect.poll(() => page.evaluate('typeof releasePauseACK')).toBe('function');
+        // Navigate outside a discrete React event so passive effects can be deferred.
+        await page.evaluate('navigateScene()');
+        await expect.poll(() => frame.isDetached()).toBe(true);
+        await expect.poll(() => page.evaluate('caption()')).toBe('First narration');
+        await expect.poll(() => page.evaluate('mode()')).toBe('playing');
+        await expect.poll(() => page.evaluate('narrating()')).toBe(true);
+      });
     if (surface === 'standalone')
       test('a second toggle cancels the pending silence acknowledgement', async ({ page }) => {
         await page.evaluate('window.holdPauseACK=true');
