@@ -76,6 +76,43 @@ describe('interactive media session', () => {
     message({ ...playing, requestId: post.mock.calls.at(-1)![0].requestId, playing: false });
     await expect(reconnected).resolves.toBe(true);
   });
+  it('retains playback reported during a pause when the acknowledgement misses the timeout', async () => {
+    vi.useFakeTimers();
+    const { session, message, post, played } = fixture();
+    const paused = session.pause();
+    const id = post.mock.calls.at(-1)![0].requestId;
+    message(playing);
+    message({ ...playing, playing: false });
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(paused).resolves.toBe(false);
+    expect(played).not.toHaveBeenCalled();
+    const count = post.mock.calls.length;
+    const retry = session.pause();
+    expect(post.mock.calls.length).toBeGreaterThan(count);
+    message({ ...playing, requestId: id, playing: false });
+    let settled = false;
+    void retry.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    message({ ...playing, requestId: post.mock.calls.at(-1)![0].requestId, playing: false });
+    await expect(retry).resolves.toBe(true);
+    message(playing);
+    expect(played).toHaveBeenCalledOnce();
+  });
+  it('lets the matching silent acknowledgement override a queued positive report', async () => {
+    vi.useFakeTimers();
+    const { session, message, post, played } = fixture();
+    const paused = session.pause();
+    message(playing);
+    message({ ...playing, requestId: post.mock.calls.at(-1)![0].requestId, playing: false });
+    await expect(paused).resolves.toBe(true);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(played).not.toHaveBeenCalled();
+    message(playing);
+    expect(played).toHaveBeenCalledOnce();
+  });
   it('coalesces requests and rejects old sources, documents, generations and acknowledgements', async () => {
     const { session, message, post, played } = fixture();
     const first = session.pause();

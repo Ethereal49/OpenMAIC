@@ -753,6 +753,46 @@ describe('PlaybackEngine action navigation', () => {
 describe('sandbox media silence before narration', () => {
   afterEach(() => vi.useRealTimers());
 
+  it.each(['blocked', 'interrupted'] as const)(
+    'persists the next guarded speech when its silence wait is %s',
+    async (outcome) => {
+      const gate = deferred<boolean>();
+      const beforeSpeech = vi.fn().mockResolvedValueOnce(true).mockReturnValueOnce(gate.promise);
+      const audio = createAudioPlayer(async () => true);
+      const currentScene = scene([speech('first'), speech('second')]);
+      let persisted = '';
+      const engine = new PlaybackEngine([currentScene], createActionEngine().engine, audio.player, {
+        beforeSpeech,
+        onProgress: (snapshot) => (persisted = JSON.stringify(snapshot)),
+      });
+      engine.start();
+      await flushPromises();
+      expect(audio.player.play).toHaveBeenCalledOnce();
+      audio.fireEnded();
+      expect(beforeSpeech).toHaveBeenCalledTimes(2);
+      if (outcome === 'interrupted') engine.pause();
+      gate.resolve(false);
+      await flushPromises();
+      expect(engine.getMode()).toBe('paused');
+      expect(engine.getSnapshot().actionIndex).toBe(1);
+      const saved = JSON.parse(persisted);
+      engine.stop();
+      expect(saved.actionIndex).toBe(1);
+
+      const onSpeechStart = vi.fn();
+      const restored = new PlaybackEngine(
+        [currentScene],
+        createActionEngine().engine,
+        createAudioPlayer(async () => true).player,
+        { onSpeechStart },
+      );
+      restored.restoreFromSnapshot(saved);
+      restored.continuePlayback();
+      expect(onSpeechStart.mock.calls).toEqual([['second', 1]]);
+      restored.stop();
+    },
+  );
+
   it.each([false, true])(
     'keeps a resumed reading timer gated when frame media starts: %s',
     async (mediaStarts) => {

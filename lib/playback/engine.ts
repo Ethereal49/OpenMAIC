@@ -262,6 +262,7 @@ export class PlaybackEngine {
         this.actionIndex = pending.actionIndex;
         this.actionRewound = true;
         this.pendingSpeech = null;
+        this.callbacks.onProgress?.(this.getSnapshot());
       }
       this.setMode('paused');
       if (pending) this.audioPlayer.stop();

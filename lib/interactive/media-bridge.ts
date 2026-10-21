@@ -267,9 +267,12 @@ export function createInteractiveMediaSession(
       return;
     }
     if (data.generation !== generation) return;
-    // Ignore play reports queued before the pause; its acknowledgement is authoritative.
+    // The acknowledgement decides silence; keep positive evidence if it never arrives.
     if (pendingPause) {
-      if (data.requestId !== pendingPause.id) return;
+      if (data.requestId !== pendingPause.id) {
+        if (data.requestId === 0 && data.playing) reportedPlaying = true;
+        return;
+      }
       pendingPause.finish(!data.playing);
     } else if (data.requestId !== 0) return;
     unresponsive = false;

@@ -389,6 +389,43 @@ for (const surface of ['app', 'standalone'] as const) {
       await expect.poll(() => page.evaluate('mode()')).toBe('paused');
       expect(await frame.evaluate('resumeAttempts')).toBe(3);
     });
+    test('blocks narration when WebAudio restarts during a delayed pause acknowledgement', async ({
+      page,
+    }) => {
+      const frame = page.frames()[1];
+      // Drop initial play reports, then deliver real reports during an intentionally delayed suspend.
+      await page.evaluate(`
+        window.allowPlayReports=false;window.pendingPlayReports=0;
+        window.addEventListener('message',event=>{
+          if(event.data?.type!=='maic:media:state:v1'||event.data.requestId!==0||!event.data.playing)return;
+          if(!window.allowPlayReports)event.stopImmediatePropagation();
+          else window.pendingPlayReports++;
+        },true);
+      `);
+      await frame.evaluate(`
+        const nativeSuspend=AudioContext.prototype.suspend;
+        AudioContext.prototype.suspend=function(){
+          if(!window.delaySuspend)return nativeSuspend.call(this);
+          return new Promise(resolve=>{window.releaseSuspend=()=>nativeSuspend.call(this).then(resolve)});
+        };
+      `);
+      await page.frameLocator('iframe').locator('#context').click();
+      await expect.poll(() => frame.evaluate('ctx.state')).toBe('running');
+      await frame.evaluate('window.delaySuspend=true');
+      await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+      await frame.waitForFunction("typeof window.releaseSuspend==='function'");
+      await page.evaluate('window.allowPlayReports=true');
+      await frame.evaluate("playContext('oscillator',false)");
+      await page.waitForFunction('window.pendingPlayReports>0');
+      // Let the real one-second timeout expire; standalone has not started its controller yet.
+      await page.waitForTimeout(1100);
+      expect(await page.evaluate('mode()')).toBe(surface === 'app' ? 'paused' : 'idle');
+      expect(await frame.evaluate('ctx.state')).toBe('running');
+      expect(await page.evaluate('narrating()')).toBe(false);
+      await frame.evaluate('window.delaySuspend=false;window.releaseSuspend()');
+      await narrate(page);
+      await expect.poll(() => frame.evaluate('ctx.state')).toBe('suspended');
+    });
     for (const kind of ['oscillator', 'buffer']) {
       test(`silent input after a short ${kind} does not interrupt narration`, async ({ page }) => {
         await narrate(page);
