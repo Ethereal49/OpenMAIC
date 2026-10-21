@@ -22,11 +22,14 @@ const mocks = vi.hoisted(() => ({
         beforeSpeech?: () => Promise<boolean>;
         onModeChange?: (mode: 'idle' | 'playing' | 'paused') => void;
         onProgress?: (snapshot: { actionIndex: number; sceneId: string }) => void;
+        onSpeechStart?: (text: string, actionIndex: number) => void;
+        onEffectFire?: (effect: import('@/lib/playback').Effect, actionIndex: number) => void;
         onUserInterrupt?: (text: string) => void;
         onComplete?: () => void;
       }
     | undefined,
   startLecture: vi.fn(),
+  addLectureMessage: vi.fn(),
   endSession: vi.fn(),
   engineStop: vi.fn(),
   enginePause: vi.fn(),
@@ -69,7 +72,7 @@ const scene = {
   title: 'Slide',
   order: 0,
   type: 'slide',
-  actions: [],
+  actions: [] as import('@/lib/types/action').Action[],
   content: {
     type: 'slide',
     canvas: { elements: [textElement, shapeElement] },
@@ -263,7 +266,7 @@ vi.mock('@/components/chat/chat-area', async () => {
         endActiveSession: vi.fn().mockResolvedValue(undefined),
         endSession: mocks.endSession,
         startLecture: mocks.startLecture,
-        addLectureMessage: vi.fn(),
+        addLectureMessage: mocks.addLectureMessage,
         getLectureMessageId: vi.fn(),
         startDiscussion: vi.fn(),
         switchToTab: vi.fn(),
@@ -415,6 +418,7 @@ describe('PlaybackChromeRoot element-reference ownership', () => {
     mocks.engineOptions = undefined;
     mocks.startLecture.mockReset();
     mocks.startLecture.mockResolvedValue('lecture-1');
+    mocks.addLectureMessage.mockReset();
     mocks.endSession.mockReset();
     mocks.endSession.mockResolvedValue(undefined);
     mocks.engineStop.mockReset();
@@ -741,6 +745,47 @@ describe('PlaybackChromeRoot element-reference ownership', () => {
     expect(mocks.sendMessage).toHaveBeenCalledOnce();
     expect(mocks.sendMessage).toHaveBeenCalledWith('Explain this', undefined);
   });
+
+  it.each([false, true])(
+    'preserves persisted lecture ordinals and retry identity with source gaps=%s',
+    async (withGaps) => {
+      const actions: import('@/lib/types/action').Action[] = [
+        ...(withGaps ? [{ id: 'board', type: 'wb_open' as const }] : []),
+        { id: 'saved-speech', type: 'speech', text: 'Already saved' },
+        ...(withGaps ? [{ id: 'clear', type: 'wb_clear' as const }] : []),
+        { id: 'spot', type: 'spotlight', elementId: 'text-1' },
+        { id: 'laser', type: 'laser', elementId: 'shape-1' },
+        { id: 'new-speech', type: 'speech', text: 'New line' },
+      ];
+      stageState.scenes = [{ ...scene, actions }];
+      await renderOwner();
+      await act(async () => {
+        await (mocks.roundtableProps!.onPlayPause as () => Promise<void>)();
+      });
+      const callbacks = mocks.engineOptions!;
+      const speechIndex = actions.findIndex((action) => action.id === 'saved-speech');
+      act(() => {
+        callbacks.onSpeechStart!('Already saved', speechIndex);
+        callbacks.onSpeechStart!('Already saved', speechIndex);
+        callbacks.onEffectFire!(
+          { kind: 'spotlight', targetId: 'text-1' },
+          actions.findIndex((action) => action.id === 'spot'),
+        );
+        callbacks.onEffectFire!(
+          { kind: 'laser', targetId: 'shape-1' },
+          actions.findIndex((action) => action.id === 'laser'),
+        );
+        callbacks.onSpeechStart!(
+          'New line',
+          actions.findIndex((action) => action.id === 'new-speech'),
+        );
+      });
+      // Persisted lastActionIndex=0 must still reject the saved speech on replay.
+      expect(mocks.addLectureMessage.mock.calls.map(([, , ordinal]) => ordinal)).toEqual([
+        0, 0, 1, 2, 3,
+      ]);
+    },
+  );
 
   it('pauses only actual lecture narration when frame media starts', async () => {
     mocks.engineMode = 'playing';

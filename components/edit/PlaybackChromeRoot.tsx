@@ -805,6 +805,13 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
           widgetSendMessage,
         );
 
+        // Preserve persisted chat-only ordinals while retries reuse the same source action.
+        const lectureActionOrdinal = (actionIndex: number) =>
+          currentScene.actions
+            ?.slice(0, actionIndex)
+            .filter(({ type }) => type === 'speech' || type === 'spotlight' || type === 'laser')
+            .length ?? 0;
+
         // Create new PlaybackEngine
         const engine = new PlaybackEngine([currentScene], actionEngine, audioPlayerRef.current, {
           beforeSpeech: pauseInteractiveMedia,
@@ -831,14 +838,13 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
           },
           onSpeechStart: (text, actionIndex) => {
             setLectureSpeech(text);
-            // Keep the source action index stable when pending speech is retried.
             // Chat area pacing is handled by the StreamBuffer (onTextReveal)
             if (lectureSessionIdRef.current) {
               const speechId = `speech-${Date.now()}`;
               chatAreaRef.current?.addLectureMessage(
                 lectureSessionIdRef.current,
                 { id: speechId, type: 'speech', text } as Action,
-                actionIndex,
+                lectureActionOrdinal(actionIndex),
               );
               // Track active bubble for highlight (Issue 8)
               const msgId = chatAreaRef.current?.getLectureMessageId(lectureSessionIdRef.current!);
@@ -864,7 +870,7 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
                   type: effect.kind,
                   elementId: effect.targetId,
                 } as Action,
-                actionIndex,
+                lectureActionOrdinal(actionIndex),
               );
             }
           },
