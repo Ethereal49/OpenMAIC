@@ -8,13 +8,15 @@ const bytes = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/media/resolve-audio-bytes', () => ({ resolveAudioBlob: bytes }));
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((done, fail) => {
     resolve = done;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 class Media {
-  static last: Media;
+  static last: Media | undefined;
   static pending: Promise<void> | undefined;
   src = '';
   paused = true;
@@ -38,12 +40,14 @@ class Media {
 }
 beforeEach(() => {
   bytes.mockReset();
+  Media.last = undefined;
   Media.pending = undefined;
   vi.stubGlobal('Audio', Media);
   vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:pending-test');
   vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
 });
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -115,3 +119,37 @@ it.each(['bytes', 'fetch', 'play'])(
     engine.stop();
   },
 );
+
+it('resumes the reading fallback after rejected narration is paused for frame media', async () => {
+  vi.useFakeTimers();
+  const playing = deferred<void>();
+  Media.pending = playing.promise;
+  bytes.mockResolvedValue(new Blob(['invalid narration']));
+  const player = new AudioPlayer();
+  const onComplete = vi.fn();
+  const engine = new PlaybackEngine(
+    [
+      { id: 's', actions: [{ id: 'line', type: 'speech', text: 'First line', audioId: 'line' }] },
+    ] as Scene[],
+    { clearEffects: vi.fn() } as unknown as ActionEngine,
+    player,
+    { beforeSpeech: async () => true, onComplete },
+  );
+  try {
+    engine.start();
+    await vi.waitFor(() => expect(Media.last?.play).toHaveBeenCalledOnce());
+    playing.reject(new Error('Narration decode failed'));
+    await vi.advanceTimersByTimeAsync(250);
+    expect(engine.isNarrating()).toBe(true);
+    engine.pause();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(onComplete).not.toHaveBeenCalled();
+    await engine.resume();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(onComplete).toHaveBeenCalledOnce();
+    expect(engine.getMode()).toBe('idle');
+    expect(Media.last!.play).toHaveBeenCalledOnce();
+  } finally {
+    engine.stop();
+  }
+});

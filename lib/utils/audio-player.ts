@@ -215,6 +215,7 @@ export class AudioPlayer {
       try {
         await this.audio.play();
       } catch (playError) {
+        if (audio.onended === onEnded) audio.onended = null;
         this.releaseBlobUrl(blobUrl);
         throw playError;
       }

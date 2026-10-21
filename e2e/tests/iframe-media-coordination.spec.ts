@@ -143,7 +143,11 @@ createRoot(document.getElementById('app')).render(<App/>);
             '@/lib/media/resolve-audio-bytes': './e2e/fixtures/media-stubs.ts',
           }
         : {},
-    define: { 'process.env.NODE_ENV': '"production"' },
+    define: {
+      'process.env.NODE_ENV': '"production"',
+      'process.env.LOG_LEVEL': 'undefined',
+      'process.env.LOG_FORMAT': 'undefined',
+    },
   }).outputFiles[0].text;
 }
 async function narrate(page: Page) {
@@ -442,7 +446,25 @@ for (const surface of ['app', 'standalone'] as const) {
         expect(await page.evaluate('mode()')).toBe('idle');
         expect(await page.evaluate('narrating()')).toBe(false);
       });
-    if (surface === 'app')
+    if (surface === 'app') {
+      test('resumes reading after narration decode failure and a frame-media pause', async ({
+        page,
+      }) => {
+        const pageErrors: string[] = [];
+        page.on('pageerror', (error) => pageErrors.push(error.message));
+        await page.route('http://localhost/narration.wav', (route) =>
+          route.fulfill({ contentType: 'audio/wav', body: 'invalid narration bytes' }),
+        );
+        await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+        await expect.poll(() => page.evaluate('audios.some(audio=>audio.error!==null)')).toBe(true);
+        expect(pageErrors).toEqual([]);
+        await page.frameLocator('iframe').locator('#audio').click();
+        await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+        await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+        await expect.poll(() => page.evaluate('caption()')).toBe('Second narration');
+        expect(pageErrors).toEqual([]);
+      });
+
       test('cancels a loading real AudioPlayer clip when frame media starts', async ({ page }) => {
         let release!: () => void;
         const waiting = new Promise<void>((resolve) => {
@@ -470,5 +492,6 @@ for (const surface of ['app', 'standalone'] as const) {
           release();
         }
       });
+    }
   });
 }

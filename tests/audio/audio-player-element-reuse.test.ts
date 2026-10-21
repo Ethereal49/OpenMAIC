@@ -95,6 +95,34 @@ describe('AudioPlayer narration element', () => {
     expect(audio.instances).toHaveLength(1);
   });
 
+  it('keeps the replacement completion callback when an older play rejects late', async () => {
+    stubObjectUrl();
+    let failFirst!: (error: Error) => void;
+    const firstPlay = new Promise<void>((_resolve, reject) => {
+      failFirst = reject;
+    });
+    const element = new AudioStub();
+    element.play.mockReturnValueOnce(firstPlay);
+    vi.stubGlobal('Audio', function () {
+      return element;
+    });
+    const { AudioPlayer } = await import('@/lib/utils/audio-player');
+    const player = new AudioPlayer();
+    const onEnded = vi.fn();
+    player.onEnded(onEnded);
+    const first = player.play('audio-1').catch((error) => error);
+    await vi.waitFor(() => expect(element.play).toHaveBeenCalledOnce());
+    await player.play('audio-2');
+    const currentCompletion = element.onended;
+    failFirst(new Error('Superseded play failed'));
+    await first;
+    expect(element.onended).toBe(currentCompletion);
+    expect(player.hasActiveAudio()).toBe(true);
+    element.onended?.();
+    expect(onEnded).toHaveBeenCalledOnce();
+    player.stop();
+  });
+
   it('reuses that one element for every line', async () => {
     stubObjectUrl();
     const { instances } = stubAudio('mobile');
