@@ -190,6 +190,56 @@ for (const surface of ['app', 'standalone'] as const) {
       await page.addScriptTag({ content: bundle(surface) });
       await expect(page.frameLocator('iframe').locator('#audio')).toBeVisible();
     });
+    test('initializing an empty context leaves narration playing until its source starts', async ({
+      page,
+    }) => {
+      await narrate(page);
+      await page.evaluate(`{
+        window.contextReady=false;
+        window.addEventListener('message',event=>{
+          if(event.data?.type==='test:context-ready')window.contextReady=true;
+        });
+      }`);
+      const frame = page.frames()[1];
+      await frame.evaluate(`{
+        const init=document.createElement('button');init.id='init-only';init.textContent='Initialize context';
+        init.onclick=async()=>{window.idleContext=new AudioContext();await idleContext.resume();parent.postMessage({type:'test:context-ready'},'*')};
+        const sound=document.createElement('button');sound.id='start-idle';sound.textContent='Start sound';
+        sound.onclick=()=>{const source=idleContext.createOscillator();source.connect(idleContext.destination);source.start()};
+        document.body.prepend(init,sound);
+      }`);
+      await page.frameLocator('iframe').locator('#init-only').click();
+      await expect.poll(() => page.evaluate('contextReady')).toBe(true);
+      expect(await page.evaluate('mode()')).toBe('playing');
+      expect(await page.evaluate('narrating()')).toBe(true);
+      await page.frameLocator('iframe').locator('#start-idle').click();
+      await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+    });
+    test('persistent gain-only sources use explicit context resume', async ({ page }) => {
+      await narrate(page);
+      const frame = page.frames()[1];
+      await frame.evaluate(`{
+        const start=document.createElement('button');start.id='persistent-start';start.textContent='Start graph';
+        start.onclick=()=>{
+          window.persistent=new AudioContext();window.gain=persistent.createGain();gain.gain.value=0;
+          const source=persistent.createOscillator();source.connect(gain);gain.connect(persistent.destination);source.start();window.sourceCount=1;
+        };
+        const volume=document.createElement('button');volume.id='gain-only';volume.textContent='Raise gain';volume.onclick=()=>{gain.gain.value=.2};
+        const resume=document.createElement('button');resume.id='resume-graph';resume.textContent='Resume graph';resume.onclick=()=>persistent.resume();
+        document.body.prepend(start,volume,resume);
+      }`);
+      await page.frameLocator('iframe').locator('#persistent-start').click();
+      await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+      await narrate(page);
+      expect(await frame.evaluate('persistent.state')).toBe('suspended');
+      await page.frameLocator('iframe').locator('#gain-only').click();
+      expect(await frame.evaluate('persistent.state')).toBe('suspended');
+      expect(await page.evaluate('narrating()')).toBe(true);
+      await page.frameLocator('iframe').locator('#resume-graph').click();
+      await expect.poll(() => frame.evaluate('persistent.state')).toBe('running');
+      await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+      expect(await frame.evaluate('sourceCount')).toBe(1);
+    });
     test('holds reading progress when frame media starts during resume', async ({ page }) => {
       await page.evaluate('readingOnly()');
       await page.getByRole('button', { name: 'Narrate', exact: true }).click();

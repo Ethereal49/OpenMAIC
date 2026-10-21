@@ -265,12 +265,27 @@ function bridgeFixture() {
 }
 
 describe('main-document bridge', () => {
+  it('keeps empty contexts silent until a source actually starts', async () => {
+    const { Context, Source, contexts, control, parent } = bridgeFixture();
+    const context = new Context();
+    expect(contexts.has(context)).toBe(false);
+    expect(parent.postMessage.mock.calls.at(-1)![0].playing).toBe(false);
+    control({ action: 'pause', requestId: 1 });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(context.state).toBe('running');
+    new Source(context).start();
+    expect(contexts.has(context)).toBe(true);
+    expect(parent.postMessage.mock.calls.at(-1)![0].playing).toBe(true);
+  });
+
   it.each(['factory', 'constructor'] as const)(
     'restores routed media created by %s without resuming unrelated or authored suspensions',
     async (kind) => {
-      const { Context, Audio, ElementSource, Node, control } = bridgeFixture();
+      const { Context, Audio, ElementSource, Node, Source, control } = bridgeFixture();
       const context = new Context();
       const other = new Context();
+      new Source(other).start();
       const sound = new Audio();
       const source =
         kind === 'factory'
@@ -327,6 +342,8 @@ describe('main-document bridge', () => {
     const { Context, Source, control, gesture } = bridgeFixture();
     const sound = new Context();
     const other = new Context();
+    new Source(sound).start();
+    new Source(other).start();
     control({ action: 'pause', requestId: 1 });
     await Promise.resolve();
     await Promise.resolve();
@@ -344,6 +361,7 @@ describe('main-document bridge', () => {
       const { Context, Source, BufferSource, control } = bridgeFixture();
       const Node = kind === 'buffer' ? BufferSource : Source;
       const sound = new Context();
+      new Node(sound).start();
       control({ action: 'pause', requestId: 1 });
       await Promise.resolve();
       await Promise.resolve();
@@ -364,6 +382,7 @@ describe('main-document bridge', () => {
     async (method) => {
       const { Context, Source, control } = bridgeFixture();
       const sound = new Context();
+      new Source(sound).start();
       control({ action: 'pause', requestId: 1 });
       await Promise.resolve();
       await Promise.resolve();
@@ -375,6 +394,7 @@ describe('main-document bridge', () => {
   it('does not resume a hidden frame until a fresh source start after visibility returns', async () => {
     const { Context, Source, control } = bridgeFixture();
     const sound = new Context();
+    new Source(sound).start();
     control({ action: 'sync', enabled: false });
     await Promise.resolve();
     await Promise.resolve();
@@ -399,7 +419,7 @@ describe('main-document bridge', () => {
     expect(sound.state).toBe('suspended');
   });
   it('releases inactive contexts and tracks constructor aliases and subclasses', async () => {
-    const { Context, contexts, control } = bridgeFixture();
+    const { Context, Source, contexts, control } = bridgeFixture();
     expect(Object.getOwnPropertyDescriptor(Context.prototype, 'constructor')).toMatchObject({
       value: Context,
       enumerable: false,
@@ -409,6 +429,8 @@ describe('main-document bridge', () => {
     const sound = new Alias();
     const derived = new Derived();
     expect(derived.constructor).toBe(Derived);
+    new Source(sound).start();
+    new Source(derived).start();
     expect(contexts.size).toBe(2);
     control({ action: 'pause', requestId: 1 });
     await Promise.resolve();
@@ -426,6 +448,7 @@ describe('main-document bridge', () => {
       resolve = done;
     });
     const sound = new Context();
+    new Source(sound).start();
     control({ action: 'pause', requestId: 1 });
     new Source(sound).start();
     resolve();
@@ -433,8 +456,9 @@ describe('main-document bridge', () => {
     expect(sound.state).toBe('running');
   });
   it('rejects controls from another source or a stale generation', async () => {
-    const { Context, control } = bridgeFixture();
+    const { Context, Source, control } = bridgeFixture();
     const sound = new Context();
+    new Source(sound).start();
     control({ action: 'pause', requestId: 1 }, {});
     control({ action: 'pause', requestId: 1, generation: 0 });
     await Promise.resolve();

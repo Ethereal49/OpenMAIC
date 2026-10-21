@@ -48,13 +48,16 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
     state.suspended = null;
     state.resumeRequested = false;
   }
-  function resumeForSound(context) {
+  function soundStarted(context) {
     var state = contextState.get(context);
-    if (!enabled || !state || !state.suspended) return;
+    if (!state) return;
+    state.started = true;
+    if (context.state === 'running') contexts.add(context);
+    if (!enabled || !state.suspended) return;
     if (context.state === 'closed') { forget(context); return; }
     state.resumeRequested = true;
     if (!state.pending) forget(context);
-    // Resume in the start call; retry if an overlapping suspend settles later.
+    // Resume on playback; retry if an overlapping suspend settles later.
     state.resume.call(context).catch(function () {});
   }
   ['AudioScheduledSourceNode', 'AudioBufferSourceNode'].forEach(function (name) {
@@ -63,7 +66,8 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
     var start = Source.prototype.start;
     Source.prototype.start = function () {
       var result = start.apply(this, arguments);
-      resumeForSound(this.context);
+      soundStarted(this.context);
+      changed();
       return result;
     };
   });
@@ -108,7 +112,7 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
       if (!event.target.paused && !event.target.ended && !event.target.error) {
         watch(event.target);
         var ref = mediaContexts.get(event.target);
-        if (ref) resumeForSound(ref.deref());
+        if (ref) soundStarted(ref.deref());
       }
       changed();
     }
@@ -147,15 +151,14 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
     var Tracked = new Proxy(Native, {
       construct: function (target, args, newTarget) {
         var context = Reflect.construct(target, args, newTarget);
-        var state = { suspend: context.suspend, resume: context.resume, suspended: null, pending: null, resumeRequested: false };
+        var state = { suspend: context.suspend, resume: context.resume, suspended: null, pending: null, resumeRequested: false, started: false };
         contextState.set(context, state);
         ['suspend', 'resume', 'close'].forEach(function (method) {
           var native = context[method];
           context[method] = function () { if (contextState.has(this)) forget(this); return native.apply(this, arguments); };
         });
-        if (context.state === 'running') contexts.add(context);
         context.addEventListener('statechange', function () {
-          if (context.state === 'running') contexts.add(context);
+          if (context.state === 'running' && state.started) contexts.add(context);
           else contexts.delete(context);
           if (context.state === 'closed') forget(context);
           changed();
