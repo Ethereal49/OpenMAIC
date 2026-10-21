@@ -358,6 +358,37 @@ for (const surface of ['app', 'standalone'] as const) {
       await page.frameLocator('iframe').locator('#context').click();
       expect(await frame.evaluate('ctx.state')).toBe('suspended');
     });
+    test('retries a rejected automatic WebAudio resume on the next playback click', async ({
+      page,
+    }) => {
+      const frame = page.frames()[1];
+      // Inject one rejection while retaining native context state and subsequent resumes.
+      await frame.evaluate(`
+        const nativeResume=AudioContext.prototype.resume;
+        window.resumeAttempts=0;
+        AudioContext.prototype.resume=function(){
+          resumeAttempts++;
+          if(window.rejectNextResume){
+            window.rejectNextResume=false;
+            return Promise.reject(new Error('Injected resume rejection'));
+          }
+          return nativeResume.apply(this,arguments);
+        };
+      `);
+      await page.frameLocator('iframe').locator('#context').click();
+      await expect.poll(() => frame.evaluate('ctx.state')).toBe('running');
+      await narrate(page);
+      await expect.poll(() => frame.evaluate('ctx.state')).toBe('suspended');
+      await frame.evaluate('window.rejectNextResume=true');
+      await page.frameLocator('iframe').locator('#context').click();
+      expect(await frame.evaluate('resumeAttempts')).toBe(2);
+      expect(await frame.evaluate('ctx.state')).toBe('suspended');
+      expect(await page.evaluate('narrating()')).toBe(true);
+      await page.frameLocator('iframe').locator('#context').click();
+      await expect.poll(() => frame.evaluate('ctx.state')).toBe('running');
+      await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+      expect(await frame.evaluate('resumeAttempts')).toBe(3);
+    });
     for (const kind of ['oscillator', 'buffer']) {
       test(`silent input after a short ${kind} does not interrupt narration`, async ({ page }) => {
         await narrate(page);

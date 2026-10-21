@@ -34,10 +34,7 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
       state.pending = state.suspend.call(context).catch(function () {}).then(function () {
         state.pending = null;
         if (!enabled && context.state === 'running') return state.suspend.call(context).catch(function () {});
-        if (state.suspended === ref && state.resumeRequested && enabled) {
-          forget(context);
-          if (context.state !== 'closed') return state.resume.call(context).catch(function () {});
-        }
+        if (state.suspended === ref && state.resumeRequested && enabled) return soundStarted(context);
       });
       return state.pending;
     }));
@@ -56,9 +53,11 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
     if (!enabled || !state.suspended) return;
     if (context.state === 'closed') { forget(context); return; }
     state.resumeRequested = true;
-    if (!state.pending) forget(context);
+    var ref = state.suspended;
     // Resume on playback; retry if an overlapping suspend settles later.
-    state.resume.call(context).catch(function () {});
+    return state.resume.call(context).then(function () {
+      if (state.suspended === ref && !state.pending && context.state === 'running') forget(context);
+    }).catch(function () {});
   }
   ['AudioScheduledSourceNode', 'AudioBufferSourceNode'].forEach(function (name) {
     var Source = window[name];

@@ -455,6 +455,58 @@ describe('main-document bridge', () => {
     await new Promise((done) => setTimeout(done, 0));
     expect(sound.state).toBe('running');
   });
+  it.each(['settled', 'pending'] as const)(
+    'retries a rejected automatic resume after a %s bridge suspend',
+    async (suspension) => {
+      const { Context, NativeContext, Source, control } = bridgeFixture();
+      const nativeResume = NativeContext.prototype.resume;
+      const resume = vi.spyOn(NativeContext.prototype, 'resume');
+      let finish!: () => void;
+      if (suspension === 'pending') {
+        NativeContext.pending = new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+        resume.mockImplementationOnce(nativeResume);
+      }
+      resume.mockRejectedValueOnce(new Error('Resume denied'));
+      const sound = new Context();
+      new Source(sound).start();
+      control({ action: 'pause', requestId: 1 });
+      if (suspension === 'settled') await new Promise((done) => setTimeout(done, 0));
+      new Source(sound).start();
+      if (suspension === 'pending') finish();
+      await new Promise((done) => setTimeout(done, 0));
+      expect(sound.state).toBe('suspended');
+      new Source(sound).start();
+      await new Promise((done) => setTimeout(done, 0));
+      expect(sound.state).toBe('running');
+      expect(resume).toHaveBeenCalledTimes(suspension === 'pending' ? 3 : 2);
+    },
+  );
+  it.each(['suspend', 'close'] as const)(
+    'does not reclaim an authored %s after an automatic resume rejects',
+    async (method) => {
+      const { Context, NativeContext, Source, control } = bridgeFixture();
+      let reject!: (error: Error) => void;
+      const resume = vi.spyOn(NativeContext.prototype, 'resume').mockImplementationOnce(
+        () =>
+          new Promise<void>((_, fail) => {
+            reject = fail;
+          }),
+      );
+      const sound = new Context();
+      new Source(sound).start();
+      control({ action: 'pause', requestId: 1 });
+      await new Promise((done) => setTimeout(done, 0));
+      new Source(sound).start();
+      await sound[method]();
+      reject(new Error('Resume denied'));
+      await new Promise((done) => setTimeout(done, 0));
+      new Source(sound).start();
+      expect(sound.state).toBe(method === 'close' ? 'closed' : 'suspended');
+      expect(resume).toHaveBeenCalledOnce();
+    },
+  );
   it('rejects controls from another source or a stale generation', async () => {
     const { Context, Source, control } = bridgeFixture();
     const sound = new Context();
