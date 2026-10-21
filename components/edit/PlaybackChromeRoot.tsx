@@ -1198,7 +1198,7 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
         }
       } else if (mode === 'paused') {
         await engine.resume();
-        if (engineRef.current !== engine || engine.getMode() === 'paused') return;
+        if (engineRef.current !== engine || engine.getMode() !== 'playing') return;
         // Resume lecture buffer
         if (lectureSessionIdRef.current) {
           chatAreaRef.current?.resumeBuffer(lectureSessionIdRef.current);

@@ -16,11 +16,11 @@ const mocks = vi.hoisted(() => ({
   canvasProps: undefined as Record<string, unknown> | undefined,
   coursewareReferenceEnabled: true,
   topicActive: false,
-  engineMode: 'idle' as 'idle' | 'playing' | 'paused',
+  engineMode: 'idle' as 'idle' | 'playing' | 'paused' | 'live',
   engineOptions: undefined as
     | {
         beforeSpeech?: () => Promise<boolean>;
-        onModeChange?: (mode: 'idle' | 'playing' | 'paused') => void;
+        onModeChange?: (mode: 'idle' | 'playing' | 'paused' | 'live') => void;
         onProgress?: (snapshot: { actionIndex: number; sceneId: string }) => void;
         onSpeechStart?: (text: string, actionIndex: number) => void;
         onEffectFire?: (effect: import('@/lib/playback').Effect, actionIndex: number) => void;
@@ -33,6 +33,8 @@ const mocks = vi.hoisted(() => ({
   endSession: vi.fn(),
   engineStop: vi.fn(),
   enginePause: vi.fn(),
+  engineResume: vi.fn(),
+  resumeBuffer: vi.fn(),
   narrating: true,
   sendFrameMessage: vi.fn().mockResolvedValue(true),
   hiddenFrameMessage: vi.fn().mockResolvedValue(true),
@@ -276,7 +278,7 @@ vi.mock('@/components/chat/chat-area', async () => {
         continueActiveSoftClosingSession: vi.fn(),
         getActiveSessionType: vi.fn(),
         pauseBuffer: vi.fn(),
-        resumeBuffer: vi.fn(),
+        resumeBuffer: mocks.resumeBuffer,
         resumeActiveSession: vi.fn(),
       }));
       return null;
@@ -292,7 +294,7 @@ vi.mock('@/lib/playback', () => ({
       _audioPlayer: unknown,
       options: {
         beforeSpeech?: () => Promise<boolean>;
-        onModeChange?: (mode: 'idle' | 'playing' | 'paused') => void;
+        onModeChange?: (mode: 'idle' | 'playing' | 'paused' | 'live') => void;
         onUserInterrupt?: (text: string) => void;
         onComplete?: () => void;
       },
@@ -330,6 +332,9 @@ vi.mock('@/lib/playback', () => ({
     }
     pause() {
       mocks.enginePause();
+    }
+    resume() {
+      return mocks.engineResume();
     }
     confirmDiscussion() {}
     skipDiscussion() {}
@@ -403,6 +408,8 @@ describe('PlaybackChromeRoot element-reference ownership', () => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     mocks.narrating = true;
     mocks.enginePause.mockClear();
+    mocks.engineResume.mockReset();
+    mocks.resumeBuffer.mockReset();
     mocks.hiddenFrameMessage.mockReset().mockResolvedValue(true);
     mocks.sendFrameMessage.mockReset().mockResolvedValue(true);
     mocks.whiteboardOpen = false;
@@ -1033,6 +1040,56 @@ describe('PlaybackChromeRoot element-reference ownership', () => {
     act(() => previousEngineOptions?.onProgress?.({ actionIndex: 1, sceneId: scene.id }));
     expect(mocks.roundtableProps?.currentActionIndex).toBe(0);
   });
+
+  it.each(['playing', 'live', 'paused', 'idle'] as const)(
+    'resumes the lecture buffer only if a pending resume settles while %s',
+    async (mode) => {
+      await renderOwner();
+      await act(async () => {
+        await (mocks.roundtableProps!.onPlayPause as () => Promise<void>)();
+      });
+      expect(mocks.startLecture).toHaveBeenCalledWith(scene.id);
+      let release!: () => void;
+      mocks.engineResume.mockImplementation(() => {
+        mocks.engineMode = 'playing';
+        mocks.engineOptions?.onModeChange?.('playing');
+        return new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      });
+      act(() => {
+        mocks.engineMode = 'paused';
+        mocks.engineOptions?.onModeChange?.('paused');
+      });
+      let resumed!: Promise<void>;
+      act(() => {
+        resumed = (mocks.roundtableProps!.onPlayPause as () => Promise<void>)();
+      });
+      expect(mocks.engineResume).toHaveBeenCalledOnce();
+      if (mode === 'live') {
+        mocks.handleUserInterrupt.mockImplementation(() => {
+          mocks.engineMode = 'live';
+          mocks.engineOptions?.onModeChange?.('live');
+        });
+        click('send');
+        expect(mocks.handleUserInterrupt).toHaveBeenCalledWith('Explain this');
+        expect(mocks.sendMessage).toHaveBeenCalledOnce();
+      } else {
+        act(() => {
+          mocks.engineMode = mode;
+          mocks.engineOptions?.onModeChange?.(mode);
+        });
+      }
+      await act(async () => {
+        release();
+        await resumed;
+      });
+      if (mode === 'playing') {
+        expect(mocks.resumeBuffer).toHaveBeenCalledOnce();
+        expect(mocks.resumeBuffer).toHaveBeenCalledWith('lecture-1');
+      } else expect(mocks.resumeBuffer).not.toHaveBeenCalled();
+    },
+  );
 
   it('does not resume manual playback after its engine is superseded', async () => {
     let resolveStartLecture!: (sessionId: string) => void;

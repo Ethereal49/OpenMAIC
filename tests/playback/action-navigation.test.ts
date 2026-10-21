@@ -868,6 +868,32 @@ describe('sandbox media silence before narration', () => {
     engine.stop();
   });
 
+  it('keeps a live interrupt after a pending resume receives its silence acknowledgement', async () => {
+    const beforeSpeech = vi.fn().mockResolvedValue(true);
+    const audio = createAudioPlayer(async () => true).player;
+    const engine = new PlaybackEngine(
+      [scene([speech('one')])],
+      createActionEngine().engine,
+      audio,
+      { beforeSpeech },
+    );
+    engine.start();
+    await flushPromises();
+    engine.pause();
+    vi.mocked(audio.hasActiveAudio).mockReturnValue(true);
+    const gate = deferred<boolean>();
+    beforeSpeech.mockReturnValue(gate.promise);
+    const resumed = engine.resume();
+    expect(engine.getMode()).toBe('playing');
+    engine.handleUserInterrupt('Explain this');
+    expect(engine.getMode()).toBe('live');
+    gate.resolve(true);
+    await resumed;
+    expect(engine.getMode()).toBe('live');
+    expect(audio.resume).not.toHaveBeenCalled();
+    engine.stop();
+  });
+
   it('does not start stale speech after navigation cancels the silence wait', async () => {
     const gate = deferred<boolean>();
     const audio = createAudioPlayer(async () => true).player;
