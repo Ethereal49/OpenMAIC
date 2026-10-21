@@ -104,7 +104,7 @@ import {usePlayback} from './lib/standalone-player/playback/use-playback';
 import {InteractiveScene} from './lib/standalone-player/scenes/InteractiveScene';
 const speech=[{id:'first',type:'speech',text:'First narration',audioRef:'narration'},{id:'second',type:'speech',text:'Second narration',audioRef:'narration'}];
 const scenes=[{type:'interactive',order:0,actions:speech,content:{type:'interactive'}},{type:'interactive',order:1,actions:speech,content:{type:'interactive'}}];
-function App(){const [index,setIndex]=useState(0);const p=usePlayback(scenes,index,setIndex);window.navigateScene=()=>setIndex(index?0:1);window.mode=()=>p.state.mode;window.caption=()=>p.state.view.caption;return <><button onClick={p.play}>Narrate</button><button onClick={p.pause}>Pause</button><button onClick={p.toggle}>Toggle</button><button onClick={()=>setIndex(index?0:1)}>Navigate scene</button>{index===0&&<InteractiveScene html={html} strings={{}} title="test" widgets={p.widgets}/>}</>}
+function App(){const [index,setIndex]=useState(0);const p=usePlayback(scenes,index,setIndex);window.readingOnly=()=>speech.forEach(action=>delete action.audioRef);window.navigateScene=()=>setIndex(index?0:1);window.mode=()=>p.state.mode;window.caption=()=>p.state.view.caption;return <><button onClick={p.play}>Narrate</button><button onClick={p.pause}>Pause</button><button onClick={p.toggle}>Toggle</button><button onClick={()=>setIndex(index?0:1)}>Navigate scene</button>{index===0&&<InteractiveScene html={html} strings={{}} title="test" widgets={p.widgets}/>}</>}
 `
     : `
 import {PlaybackEngine} from './lib/playback/engine';
@@ -116,9 +116,10 @@ const useI18n=()=>({t:k=>k});const useCanvasStore={use:{pickTarget:()=>null}};co
 const runtime={errors:{},clearScene(){}};const useSceneRuntimeErrors=Object.assign(s=>s(runtime),{getState:()=>runtime});
 const InteractiveRuntimeErrorBanner=()=>null;const resolveInteractivePickerMode=()=>null;const createObservationSession=()=>null;
 ${sourceFunction(hostPath, 'PooledIframe')}
-const lectureSessionIdRef={current:null};const chatAreaRef={current:null};
+const lectureSessionIdRef={current:'lecture'};const chatAreaRef={current:{pauseBuffer(){window.bufferPauses=(window.bufferPauses||0)+1}}};
 const pauseInteractiveMedia=${sourceFunction(playbackPath, 'pauseInteractiveMedia')};
 const scene={id:'s',actions:[{id:'first',type:'speech',text:'First narration',audioId:'first'},{id:'second',type:'speech',text:'Second narration',audioId:'second'}]};
+window.readingOnly=()=>scene.actions.forEach(action=>delete action.audioId);window.deferRetainedFrame=()=>{const unregister=useWidgetIframeStore.getState().registerIframe('retained',()=>new Promise(resolve=>{window.releaseRetainedFrame=()=>{unregister();resolve(true)}}))};
 const engine=new PlaybackEngine([scene],{clearEffects(){},execute(){}},new AudioPlayer(),{beforeSpeech:pauseInteractiveMedia,onSpeechStart:text=>window.speech=text});const engineRef={current:engine};
 const onMediaPlay=${sourceFunction(playbackPath, 'pauseForInteractiveMedia')};window.mode=()=>engine.getMode();window.caption=()=>window.speech;
 function App(){const [visible,setVisible]=useState(true);return <><button onClick={()=>engine.getMode()==='idle'?engine.start():engine.resume()}>Narrate</button><button onClick={()=>engine.pause()}>Pause</button><button onClick={()=>{engine.stop();setVisible(!visible)}}>Navigate scene</button><PooledIframe onMediaPlay={onMediaPlay} sceneId="s" entry={{srcDoc:html,rect:{left:0,top:100,width:1280,height:720},clip:{left:0,top:100,width:1280,height:720},owner:'o'}} visible={visible} playbackArmed={false}/></>}
@@ -188,6 +189,33 @@ for (const surface of ['app', 'standalone'] as const) {
       }`);
       await page.addScriptTag({ content: bundle(surface) });
       await expect(page.frameLocator('iframe').locator('#audio')).toBeVisible();
+    });
+    test('holds reading progress when frame media starts during resume', async ({ page }) => {
+      await page.evaluate('readingOnly()');
+      await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+      await expect.poll(() => page.evaluate('caption()')).toBe('First narration');
+      await page.getByRole('button', { name: 'Pause', exact: true }).click();
+      expect(await page.evaluate('mode()')).toBe('paused');
+      await page.evaluate(`{
+        window.silentACK=false;window.mediaStarted=false;
+        window.addEventListener('message',event=>{
+          if(event.data?.type!=='maic:media:state:v1')return;
+          if(event.data.requestId>0&&event.data.playing===false)window.silentACK=true;
+          if(event.data.requestId===0&&event.data.playing===true)window.mediaStarted=true;
+        });
+        ${surface === 'app' ? 'deferRetainedFrame();' : ''}
+      }`);
+      await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+      await expect.poll(() => page.evaluate('silentACK')).toBe(true);
+      await page.frameLocator('iframe').locator('#audio').click();
+      await expect.poll(() => page.evaluate('mediaStarted')).toBe(true);
+      if (surface === 'app') await page.evaluate('releaseRetainedFrame()');
+      await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+      await page.waitForTimeout(2200);
+      expect(await page.evaluate('caption()')).toBe('First narration');
+      if (surface === 'app') expect(await page.evaluate('bufferPauses')).toBe(1);
+      await page.getByRole('button', { name: 'Narrate', exact: true }).click();
+      await expect.poll(() => page.evaluate('caption()')).toBe('Second narration');
     });
     for (const kind of ['audio', 'video', 'detached', 'autoplay', 'context']) {
       test(`coordinates ${kind} with real narration in both directions`, async ({ page }) => {

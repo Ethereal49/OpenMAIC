@@ -751,6 +751,56 @@ describe('PlaybackEngine action navigation', () => {
 });
 
 describe('sandbox media silence before narration', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it.each([false, true])(
+    'keeps a resumed reading timer gated when frame media starts: %s',
+    async (mediaStarts) => {
+      vi.useFakeTimers();
+      const beforeSpeech = vi.fn().mockResolvedValue(true);
+      const pauseBuffer = vi.fn();
+      const onSpeechEnd = vi.fn();
+      const engine = new PlaybackEngine(
+        [scene([speech('reading', 'First reading line')])],
+        createActionEngine().engine,
+        createAudioPlayer(async () => false).player,
+        { beforeSpeech, onSpeechEnd },
+      );
+      engine.start();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(engine.isNarrating()).toBe(true);
+      engine.pause();
+      expect(engine.isNarrating()).toBe(false);
+      const retainedFrame = deferred<boolean>();
+      beforeSpeech.mockImplementation(() =>
+        Promise.all([Promise.resolve(true), retainedFrame.promise]).then((results) =>
+          results.every(Boolean),
+        ),
+      );
+      const resumed = engine.resume();
+      // The active frame already acknowledged; another pooled frame is still pending.
+      await vi.advanceTimersByTimeAsync(0);
+      if (mediaStarts && engine.isNarrating()) {
+        engine.pause();
+        pauseBuffer();
+      }
+      retainedFrame.resolve(true);
+      await resumed;
+      await vi.advanceTimersByTimeAsync(10_000);
+      if (mediaStarts) {
+        expect(engine.getMode()).toBe('paused');
+        expect(pauseBuffer).toHaveBeenCalledOnce();
+        expect(onSpeechEnd).not.toHaveBeenCalled();
+        beforeSpeech.mockResolvedValue(true);
+        await engine.resume();
+        await vi.advanceTimersByTimeAsync(10_000);
+      } else expect(pauseBuffer).not.toHaveBeenCalled();
+      expect(onSpeechEnd).toHaveBeenCalledOnce();
+      expect(engine.getMode()).toBe('idle');
+      engine.stop();
+    },
+  );
+
   it('waits before both a new speech and audio resume', async () => {
     const gate = deferred<boolean>();
     const beforeSpeech = vi.fn(() => gate.promise);

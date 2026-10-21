@@ -229,7 +229,8 @@ export class PlaybackEngine {
         this.pendingSpeech ||
         this.audioPlayer.hasActiveAudio() ||
         this.browserTTSActive ||
-        this.speechTimer
+        this.speechTimer ||
+        this.speechTimerRemaining > 0
       )
     );
   }
