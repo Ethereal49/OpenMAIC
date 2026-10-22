@@ -67,6 +67,12 @@ it.each(['bytes', 'fetch', 'play'])(
     if (stage === 'play') Media.pending = playing.promise;
     const player = new AudioPlayer();
     const onSpeechStart = vi.fn();
+    const silent = deferred<boolean>();
+    const beforeSpeech = vi
+      .fn()
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true)
+      .mockReturnValueOnce(silent.promise);
     const engine = new PlaybackEngine(
       [
         {
@@ -85,7 +91,7 @@ it.each(['bytes', 'fetch', 'play'])(
       ] as unknown as Scene[],
       { clearEffects: vi.fn() } as unknown as ActionEngine,
       player,
-      { onSpeechStart },
+      { onSpeechStart, beforeSpeech },
     );
     engine.start();
     await vi.waitFor(() => {
@@ -108,7 +114,15 @@ it.each(['bytes', 'fetch', 'play'])(
     expect(player.isPlaying()).toBe(false);
     bytes.mockResolvedValue(blob);
     Media.pending = undefined;
-    await engine.resume();
+    let resumed = false;
+    const resuming = engine.resume().then(() => {
+      resumed = true;
+    });
+    await vi.waitFor(() => expect(beforeSpeech).toHaveBeenCalledTimes(3));
+    await Promise.resolve();
+    expect(resumed).toBe(false);
+    silent.resolve(true);
+    await resuming;
     await vi.waitFor(() => expect(player.isPlaying()).toBe(true));
     expect(bytes).toHaveBeenLastCalledWith('first');
     expect(engine.getSnapshot().actionIndex).toBe(1);

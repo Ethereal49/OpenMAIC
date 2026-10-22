@@ -47,6 +47,7 @@ const mocks = vi.hoisted(() => ({
   useRealEngine: false,
   realEngine: undefined as import('@/lib/playback/engine').PlaybackEngine | undefined,
   audioEnded: undefined as (() => void) | undefined,
+  pendingAudio: undefined as Promise<boolean> | undefined,
 }));
 
 const textElement = {
@@ -305,6 +306,7 @@ vi.mock('@/lib/playback', () => ({
         onComplete?: () => void;
       },
     ) {
+      mocks.engineOptions = options;
       if (mocks.useRealEngine) {
         const engine = new RealPlaybackEngine(
           _scenes as ConstructorParameters<typeof RealPlaybackEngine>[0],
@@ -315,7 +317,6 @@ vi.mock('@/lib/playback', () => ({
         mocks.realEngine = engine;
         return engine as unknown as this;
       }
-      mocks.engineOptions = options;
       options.onModeChange?.(mocks.engineMode);
     }
     stop() {
@@ -385,7 +386,7 @@ vi.mock('@/lib/utils/audio-player', () => ({
     setMuted: vi.fn(),
     setVolume: vi.fn(),
     setPlaybackRate: vi.fn(),
-    play: vi.fn(async () => true),
+    play: vi.fn(() => mocks.pendingAudio ?? Promise.resolve(true)),
     onEnded: (callback: () => void) => {
       mocks.audioEnded = callback;
     },
@@ -465,6 +466,7 @@ describe('PlaybackChromeRoot element-reference ownership', () => {
     mocks.useRealEngine = false;
     mocks.realEngine = undefined;
     mocks.audioEnded = undefined;
+    mocks.pendingAudio = undefined;
     vi.mocked(createActionResumePosition).mockReset();
     vi.mocked(saveActionResumePosition).mockReset();
     vi.mocked(canJumpWithinReconstructablePrefix).mockReset().mockReturnValue(false);
@@ -1136,6 +1138,71 @@ describe('PlaybackChromeRoot element-reference ownership', () => {
     act(() => previousEngineOptions?.onProgress?.({ actionIndex: 1, sceneId: scene.id }));
     expect(mocks.roundtableProps?.currentActionIndex).toBe(0);
   });
+
+  it.each(['playing', 'blocked', 'live'] as const)(
+    'keeps the lecture buffer paused through a requeued speech guard (%s)',
+    async (outcome) => {
+      mocks.useRealEngine = true;
+      let finishLoading!: (started: boolean) => void;
+      mocks.pendingAudio = new Promise<boolean>((resolve) => {
+        finishLoading = resolve;
+      });
+      let release!: (silent: boolean) => void;
+      const gate = new Promise<boolean>((resolve) => {
+        release = resolve;
+      });
+      const beforeSpeech = vi
+        .fn()
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(true)
+        .mockReturnValueOnce(gate);
+      stageState.scenes = [
+        { ...scene, actions: [{ id: 'first', type: 'speech', text: 'First', audioId: 'first' }] },
+      ];
+      await renderOwner();
+      mocks.engineOptions!.beforeSpeech = beforeSpeech;
+      const toggle = () => (mocks.roundtableProps!.onPlayPause as () => Promise<void>)();
+      await act(async () => {
+        await toggle();
+      });
+      expect(mocks.realEngine!.getSnapshot().actionIndex).toBe(1);
+      await act(async () => {
+        await toggle();
+        finishLoading(false);
+      });
+      expect(mocks.realEngine!.getMode()).toBe('paused');
+      expect(mocks.realEngine!.getSnapshot().actionIndex).toBe(0);
+      mocks.pendingAudio = undefined;
+      mocks.resumeBuffer.mockClear();
+      let resuming!: Promise<void>;
+      act(() => {
+        resuming = toggle();
+      });
+      try {
+        await act(async () => {
+          await vi.waitFor(() => expect(beforeSpeech).toHaveBeenCalledTimes(3));
+        });
+        expect(mocks.resumeBuffer).not.toHaveBeenCalled();
+        if (outcome === 'live') {
+          click('send');
+          expect(mocks.realEngine!.getMode()).toBe('live');
+        }
+        await act(async () => {
+          release(outcome !== 'blocked');
+          await resuming;
+        });
+        if (outcome === 'playing') {
+          expect(mocks.resumeBuffer).toHaveBeenCalledOnce();
+          expect(mocks.resumeBuffer).toHaveBeenCalledWith('lecture-1');
+        } else expect(mocks.resumeBuffer).not.toHaveBeenCalled();
+      } finally {
+        await act(async () => {
+          release(false);
+          await resuming;
+        });
+      }
+    },
+  );
 
   it.each(['playing', 'live', 'paused', 'idle'] as const)(
     'resumes the lecture buffer only if a pending resume settles while %s',

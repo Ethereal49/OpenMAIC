@@ -335,8 +335,8 @@ export class PlaybackEngine {
           if (this.mode === 'playing') this.processNext(generation);
         }, this.speechTimerRemaining);
       } else {
-        // TTS finished while paused, continue to next event
-        this.processNext();
+        // Requeued speech must clear its media guard before callers resume buffering.
+        await this.processNext();
       }
     }
   }
