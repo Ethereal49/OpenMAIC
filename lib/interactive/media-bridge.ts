@@ -77,7 +77,10 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
     AudioNode.prototype.connect = function () {
       var result = connect.apply(this, arguments);
       // Both factory and constructor-created media sources use this routing entry.
-      if (this instanceof MediaSource) mediaContexts.set(this.mediaElement, new WeakRef(this.context));
+      if (this instanceof MediaSource) {
+        mediaContexts.set(this.mediaElement, new WeakRef(this.context));
+        started({ target: this.mediaElement });
+      }
       return result;
     };
   }

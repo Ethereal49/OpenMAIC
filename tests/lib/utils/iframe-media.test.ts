@@ -302,6 +302,51 @@ function bridgeFixture() {
 }
 
 describe('main-document bridge', () => {
+  it.each(['factory', 'constructor'] as const)(
+    'restores already-playing media connected through %s after bridge suspension',
+    async (kind) => {
+      const { Context, Audio, ElementSource, Source, control } = bridgeFixture();
+      const context = new Context();
+      const other = new Context();
+      new Source(context).start();
+      new Source(other).start();
+      control({ action: 'pause', requestId: 1 });
+      await Promise.resolve();
+      await Promise.resolve();
+      const sound = new Audio();
+      await sound.play();
+      expect(sound.paused).toBe(false);
+      expect(context.state).toBe('suspended');
+      const source =
+        kind === 'factory'
+          ? context.createMediaElementSource(sound)
+          : new ElementSource(context, { mediaElement: sound });
+      const destination = {};
+      expect(source.connect(destination)).toBe(destination);
+      expect(context.state).toBe('running');
+      expect(other.state).toBe('suspended');
+    },
+  );
+
+  it.each(['paused', 'authored', 'hidden'] as const)(
+    'keeps %s media silent when connected after playback',
+    async (state) => {
+      const { Context, Audio, Source, control } = bridgeFixture();
+      const context = new Context();
+      new Source(context).start();
+      control({ action: 'pause', requestId: 1 });
+      await Promise.resolve();
+      await Promise.resolve();
+      const sound = new Audio();
+      await sound.play();
+      if (state === 'paused') sound.pause();
+      if (state === 'authored') await context.suspend();
+      if (state === 'hidden') control({ action: 'sync', enabled: false });
+      context.createMediaElementSource(sound).connect({});
+      expect(context.state).toBe('suspended');
+    },
+  );
+
   it('keeps empty contexts silent until a source actually starts', async () => {
     const { Context, Source, contexts, control, parent } = bridgeFixture();
     const context = new Context();

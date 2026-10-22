@@ -753,7 +753,7 @@ describe('PlaybackEngine action navigation', () => {
 describe('sandbox media silence before narration', () => {
   afterEach(() => vi.useRealTimers());
 
-  it.each(['blocked', 'interrupted'] as const)(
+  it.each(['blocked', 'interrupted', 'stopped'] as const)(
     'persists the next guarded speech when its silence wait is %s',
     async (outcome) => {
       const gate = deferred<boolean>();
@@ -771,10 +771,11 @@ describe('sandbox media silence before narration', () => {
       audio.fireEnded();
       expect(beforeSpeech).toHaveBeenCalledTimes(2);
       if (outcome === 'interrupted') engine.pause();
+      if (outcome === 'stopped') engine.stop();
       gate.resolve(false);
       await flushPromises();
-      expect(engine.getMode()).toBe('paused');
-      expect(engine.getSnapshot().actionIndex).toBe(1);
+      expect(engine.getMode()).toBe(outcome === 'stopped' ? 'idle' : 'paused');
+      if (outcome !== 'stopped') expect(engine.getSnapshot().actionIndex).toBe(1);
       const saved = JSON.parse(persisted);
       engine.stop();
       expect(saved.actionIndex).toBe(1);

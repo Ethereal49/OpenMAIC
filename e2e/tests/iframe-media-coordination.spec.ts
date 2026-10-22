@@ -306,6 +306,32 @@ for (const surface of ['app', 'standalone'] as const) {
         expect(await frame.evaluate(active)).toBe(false);
       });
     }
+    for (const factory of [true, false]) {
+      test(`restores already-playing media connected through ${factory ? 'factory' : 'constructor'}`, async ({
+        page,
+      }) => {
+        const frame = page.frames()[1];
+        await page.frameLocator('iframe').locator('#context').click();
+        await expect.poll(() => frame.evaluate('ctx.state')).toBe('running');
+        await narrate(page);
+        await expect.poll(() => frame.evaluate('ctx.state')).toBe('suspended');
+        await frame.evaluate(`
+          document.getElementById('audio').onclick=async()=>{
+            const element=document.querySelector('audio');
+            await element.play();
+            window.playedBeforeConnect=!element.paused;
+            window.stateBeforeConnect=ctx.state;
+            const source=${factory ? 'ctx.createMediaElementSource(element)' : 'new MediaElementAudioSourceNode(ctx,{mediaElement:element})'};
+            source.connect(ctx.destination);
+          };
+        `);
+        await page.frameLocator('iframe').locator('#audio').click();
+        await expect.poll(() => frame.evaluate('window.playedBeforeConnect')).toBe(true);
+        expect(await frame.evaluate('window.stateBeforeConnect')).toBe('suspended');
+        await expect.poll(() => page.evaluate('mode()')).toBe('paused');
+        await expect.poll(() => frame.evaluate('ctx.state')).toBe('running');
+      });
+    }
     for (const kind of ['audio', 'video', 'detached']) {
       for (const factory of [true, false]) {
         test(`restores routed ${kind} through ${factory ? 'factory' : 'constructor'} on playback`, async ({

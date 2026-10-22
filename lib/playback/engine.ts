@@ -652,16 +652,14 @@ export class PlaybackEngine {
     const actionIndex = this.actionIndex;
     const pending = action.type === 'speech' ? { generation, actionIndex } : null;
     this.pendingSpeech = pending;
+    // Publish before waiting or advancing so cleanup can persist the current
+    // action, which must be replayed on restore if speech is unfinished.
+    this.callbacks.onProgress?.(this.getSnapshot());
     if (action.type === 'speech' && this.callbacks.beforeSpeech) {
       // The cursor still belongs to this unconsumed action during its asynchronous guard.
       this.actionRewound = true;
       if (!(await this.waitForMedia(generation))) return;
     }
-
-    // Notify progress BEFORE advancing the cursor so the snapshot points at
-    // the current action.  On restore the same action will be replayed — this
-    // is the desired behaviour for speech (user may have only heard half).
-    this.callbacks.onProgress?.(this.getSnapshot());
 
     this.actionRewound = false;
     this.actionIndex++;

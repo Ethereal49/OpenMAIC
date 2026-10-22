@@ -3,6 +3,9 @@
 import { act, createElement, createRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createActionResumePosition, saveActionResumePosition } from '@/lib/playback/action-resume';
+import { PlaybackEngine as RealPlaybackEngine } from '@/lib/playback/engine';
+import { canJumpWithinReconstructablePrefix } from '@/lib/playback/action-navigation';
 
 const mocks = vi.hoisted(() => ({
   sendMessage: vi.fn(),
@@ -41,6 +44,9 @@ const mocks = vi.hoisted(() => ({
   engineStart: vi.fn(),
   engineContinuePlayback: vi.fn(),
   handleUserInterrupt: vi.fn(),
+  useRealEngine: false,
+  realEngine: undefined as import('@/lib/playback/engine').PlaybackEngine | undefined,
+  audioEnded: undefined as (() => void) | undefined,
 }));
 
 const textElement = {
@@ -299,6 +305,16 @@ vi.mock('@/lib/playback', () => ({
         onComplete?: () => void;
       },
     ) {
+      if (mocks.useRealEngine) {
+        const engine = new RealPlaybackEngine(
+          _scenes as ConstructorParameters<typeof RealPlaybackEngine>[0],
+          _actionEngine as ConstructorParameters<typeof RealPlaybackEngine>[1],
+          _audioPlayer as ConstructorParameters<typeof RealPlaybackEngine>[2],
+          options,
+        );
+        mocks.realEngine = engine;
+        return engine as unknown as this;
+      }
       mocks.engineOptions = options;
       options.onModeChange?.(mocks.engineMode);
     }
@@ -343,7 +359,7 @@ vi.mock('@/lib/playback', () => ({
   shouldAutoResumeLecture: () => false,
 }));
 vi.mock('@/lib/playback/action-navigation', () => ({
-  canJumpWithinReconstructablePrefix: () => false,
+  canJumpWithinReconstructablePrefix: vi.fn(() => false),
   isUnsafePlaybackNavigationAction: () => false,
 }));
 vi.mock('@/lib/playback/action-resume', () => ({
@@ -358,13 +374,26 @@ vi.mock('@/lib/playback/cursor', () => ({
   loadCursor: vi.fn().mockResolvedValue(null),
   saveCursor: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock('@/lib/action/engine', () => ({ ActionEngine: class {} }));
+vi.mock('@/lib/action/engine', () => ({
+  ActionEngine: class {
+    clearEffects() {}
+  },
+}));
 vi.mock('@/lib/utils/audio-player', () => ({
   createAudioPlayer: () => ({
     destroy: vi.fn(),
     setMuted: vi.fn(),
     setVolume: vi.fn(),
     setPlaybackRate: vi.fn(),
+    play: vi.fn(async () => true),
+    onEnded: (callback: () => void) => {
+      mocks.audioEnded = callback;
+    },
+    stop: vi.fn(),
+    pause: vi.fn(),
+    resume: vi.fn(),
+    isPlaying: () => false,
+    hasActiveAudio: () => false,
   }),
 }));
 vi.mock('@/lib/hooks/use-discussion-tts', () => ({
@@ -403,6 +432,7 @@ import {
 describe('PlaybackChromeRoot element-reference ownership', () => {
   let container: HTMLDivElement;
   let root: Root;
+  let rootUnmounted: boolean;
 
   beforeEach(() => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
@@ -432,6 +462,14 @@ describe('PlaybackChromeRoot element-reference ownership', () => {
     mocks.engineStart.mockReset();
     mocks.engineContinuePlayback.mockReset();
     mocks.handleUserInterrupt.mockReset();
+    mocks.useRealEngine = false;
+    mocks.realEngine = undefined;
+    mocks.audioEnded = undefined;
+    vi.mocked(createActionResumePosition).mockReset();
+    vi.mocked(saveActionResumePosition).mockReset();
+    vi.mocked(canJumpWithinReconstructablePrefix).mockReset().mockReturnValue(false);
+    window.sessionStorage.removeItem('resume-key');
+    rootUnmounted = false;
     stageState.scenes = [scene, secondScene];
     stageState.currentSceneId = scene.id;
     stageState.setCurrentSceneId.mockClear();
@@ -442,7 +480,7 @@ describe('PlaybackChromeRoot element-reference ownership', () => {
   });
 
   afterEach(() => {
-    act(() => root.unmount());
+    if (!rootUnmounted) act(() => root.unmount());
     container.remove();
     vi.unstubAllGlobals();
   });
@@ -1026,6 +1064,64 @@ describe('PlaybackChromeRoot element-reference ownership', () => {
     expect(stageState.setCurrentSceneId).not.toHaveBeenCalled();
     expect(container.querySelector('[data-testid="owner-pill"]')).not.toBeNull();
   });
+
+  it.each(['scene switch', 'unmount'] as const)(
+    'persists the pending second speech through the real engine on %s',
+    async (cleanup) => {
+      const resume = await vi.importActual<typeof import('@/lib/playback/action-resume')>(
+        '@/lib/playback/action-resume',
+      );
+      vi.mocked(createActionResumePosition).mockImplementation(resume.createActionResumePosition);
+      vi.mocked(saveActionResumePosition).mockImplementation(resume.saveActionResumePosition);
+      vi.mocked(canJumpWithinReconstructablePrefix).mockReturnValue(true);
+      mocks.useRealEngine = true;
+      let release!: (silent: boolean) => void;
+      const gate = new Promise<boolean>((resolve) => {
+        release = resolve;
+      });
+      mocks.sendFrameMessage.mockResolvedValueOnce(true).mockReturnValueOnce(gate);
+      stageState.scenes = [
+        {
+          ...scene,
+          actions: [
+            { id: 'first', type: 'speech', text: 'First', audioId: 'first' },
+            { id: 'second', type: 'speech', text: 'Second', audioId: 'second' },
+          ],
+        },
+        secondScene,
+      ];
+      await renderOwner();
+      await act(async () => {
+        mocks.realEngine!.start();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mocks.audioEnded).toBeTypeOf('function');
+      await act(async () => {
+        mocks.audioEnded!();
+        await Promise.resolve();
+      });
+      expect(mocks.sendFrameMessage).toHaveBeenCalledTimes(2);
+      if (cleanup === 'scene switch') {
+        stageState.currentSceneId = secondScene.id;
+        await rerenderOwner();
+      } else {
+        act(() => root.unmount());
+        rootUnmounted = true;
+      }
+      const saved = () => JSON.parse(window.sessionStorage.getItem('resume-key')!);
+      expect(saved().scenes[scene.id]).toEqual({
+        actionIndex: 1,
+        actionId: 'second',
+        actionType: 'speech',
+      });
+      await act(async () => {
+        release(true);
+        await Promise.resolve();
+      });
+      expect(saved().scenes[scene.id].actionIndex).toBe(1);
+    },
+  );
 
   it('stops the previous engine when switching to a non-playable scene', async () => {
     await renderOwner();
