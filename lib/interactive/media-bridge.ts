@@ -157,7 +157,17 @@ const MEDIA_BRIDGE = String.raw`(function (documentId) {
         contextState.set(context, state);
         ['suspend', 'resume', 'close'].forEach(function (method) {
           var native = context[method];
-          context[method] = function () { if (contextState.has(this)) forget(this); return native.apply(this, arguments); };
+          context[method] = function () {
+            var context = this;
+            var state = contextState.get(context);
+            var ref = state && state.suspended;
+            if (method !== 'resume' && state) forget(context);
+            var result = native.apply(context, arguments);
+            if (method === 'resume' && ref) result.then(function () {
+              if (state.suspended === ref && !state.pending && context.state === 'running') forget(context);
+            }, function () {});
+            return result;
+          };
         });
         context.addEventListener('statechange', function () {
           if (context.state === 'running' && state.started) contexts.add(context);
