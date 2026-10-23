@@ -483,7 +483,10 @@ function prepareScene(
     return {
       ...rest,
       content: html
-        ? { ...interactive, html: patchHtmlForIframe(html, undefined, mediaId) }
+        ? {
+            ...interactive,
+            html: patchHtmlForIframe(html, undefined, { processed: true, mediaId }),
+          }
         : { ...interactive, html: undefined },
     };
   }

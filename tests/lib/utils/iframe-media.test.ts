@@ -157,10 +157,10 @@ describe('interactive media session', () => {
     message(playing);
     expect(post.mock.calls.at(-1)![0]).toMatchObject({ action: 'sync', enabled: false });
   });
-  it('injects only the main document, before authored scripts, with a validated identity', () => {
+  it.each([false, true])('injects media before authored scripts (processed: %s)', (processed) => {
     const html =
       '<html><head><script>new AudioContext()</script></head><body><iframe src="https://example.test"></iframe></body></html>';
-    const patched = patchHtmlForIframe(html, undefined, 'current');
+    const patched = patchHtmlForIframe(html, undefined, { processed, mediaId: 'current' });
     expect(mediaDocumentId(patched)).toBe('current');
     expect(patched.indexOf('data-maic-media-document')).toBeLessThan(
       patched.indexOf('new AudioContext()'),

@@ -96,7 +96,7 @@ import React,{useCallback,useLayoutEffect,useEffect,useMemo,useRef,useState} fro
 import {createRoot} from 'react-dom/client';
 import {createInteractiveMediaSession,mediaDocumentId,MEDIA_CONTROL} from './lib/interactive/media-bridge';
 const NativeAudio=window.Audio;window.audios=[];window.Audio=function(...args){const a=new NativeAudio(...args);window.audios.push(a);return a;};
-const html=${JSON.stringify(patchHtmlForIframe(activity, undefined, 'current'))};
+const html=${JSON.stringify(patchHtmlForIframe(activity, undefined, { mediaId: 'current' }))};
 ${
   surface === 'standalone'
     ? `

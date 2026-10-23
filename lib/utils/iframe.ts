@@ -1,4 +1,5 @@
 import { mediaBridgeScript } from '@/lib/interactive/media-bridge';
+import { postProcessInteractiveHtml } from '@openmaic/generation/browser';
 import { injectIntoDocumentHead } from './html-document';
 import {
   withObservationResponder,
@@ -391,8 +392,9 @@ const ELEMENT_PICKER_SHIM = `<script data-iframe-element-picker-shim>
 export function patchHtmlForIframe(
   html: string,
   observation?: ObservationIdentity,
-  mediaId?: string,
+  options?: { processed?: boolean; mediaId?: string },
 ): string {
+  if (!options?.processed) html = postProcessInteractiveHtml(html);
   const iframeCss = `<style data-iframe-patch>
   html, body {
     width: 100%;
@@ -415,7 +417,7 @@ export function patchHtmlForIframe(
     '\n' +
     STORAGE_SHIM +
     '\n' +
-    (mediaId ? mediaBridgeScript(mediaId) : '') +
+    (options?.mediaId ? mediaBridgeScript(options.mediaId) : '') +
     '\n' +
     iframeCss;
 
