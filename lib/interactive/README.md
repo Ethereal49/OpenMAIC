@@ -1,26 +1,17 @@
 # Interactive media coordination
 
-The classroom and standalone player coordinate media in the injected main document.
-Successful scheduled-source `start()` calls and HTML media `play` events signal
-playback. Initializing or unlocking an `AudioContext` before a source has started
-does not interrupt narration.
+The classroom and standalone player coordinate HTML `<audio>` and `<video>`
+elements in the injected interactive document. A media `play` event pauses
+narration; the learner resumes narration with the normal Play control.
 
-Narration pauses frame media and suspends active WebAudio contexts. Only a context
-suspended by the bridge is restored automatically on a new source start or routed
-media playback; authored `suspend()` and `close()` remain under page control.
+Starting or resuming narration sends a fire-and-forget request to pause the
+current frame's media elements. There is no acknowledgement, silence guarantee,
+or automatic media resume. Background pooled frames do not participate.
 
-A persistent source started once and subsequently controlled only by gain is not
-automatically restored by gain changes. Its actual Play control should explicitly
-resume the context before raising gain:
-
-```js
-await context.resume();
-gain.gain.value = 0.2;
-```
-
-The bridge observes playback intent, not acoustic output: starting a source at
-zero gain still counts as playback. It does not inspect the audio graph or monitor
-`AudioParam` automation. Silent initialization and volume adjustments therefore
-do not act as implicit resume gestures.
+WebAudio does not take part in this coordination: `AudioContext`, scheduled
+sources and suspend/resume remain untouched. Interactive content that needs
+narration coordination should use `<audio>` elements. Detached media and media
+inside nested or external documents are outside this document-level bridge.
 
 These cooperative signals do not replace the iframe's opaque sandbox or CSP.
+Messages are checked against the frame window and injected document identity.

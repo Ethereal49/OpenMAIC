@@ -248,7 +248,7 @@ describe('action resume storage', () => {
     await flushPromises();
 
     expect(onSpeechStart).toHaveBeenCalledTimes(1);
-    expect(onSpeechStart).toHaveBeenCalledWith('c', 2);
+    expect(onSpeechStart).toHaveBeenCalledWith('c');
   });
 });
 
@@ -287,11 +287,8 @@ describe('PlaybackEngine action navigation', () => {
     await flushPromises();
 
     expect(jumped.executions).toEqual(natural.executions);
-    expect(onEffectFire.mock.calls.map(([effect, index]) => [effect.kind, index])).toEqual([
-      ['spotlight', 1],
-      ['laser', 2],
-    ]);
-    expect(onSpeechStart.mock.calls).toEqual([['target', 3]]);
+    expect(onEffectFire.mock.calls.map(([effect]) => effect.kind)).toEqual(['spotlight', 'laser']);
+    expect(onSpeechStart.mock.calls).toEqual([['target']]);
     expect(onProgress.mock.calls.every(([snapshot]) => snapshot.actionIndex === 3)).toBe(true);
     engine.stop();
     naturalEngine.stop();
@@ -351,7 +348,7 @@ describe('PlaybackEngine action navigation', () => {
       else engine.continuePlayback();
       await flushPromises();
       expect(executions.map(({ action }) => action.id)).toEqual(['spot']);
-      expect(onSpeechStart.mock.calls).toEqual([['target', 2]]);
+      expect(onSpeechStart.mock.calls).toEqual([['target']]);
       expect(onProgress.mock.calls.every(([snapshot]) => snapshot.actionIndex === 2)).toBe(true);
       engine.pause();
       engine.resume();
@@ -437,7 +434,7 @@ describe('PlaybackEngine action navigation', () => {
     reconstruction.resolve();
     expect(await staleJump).toBe(false);
     expect(executions).toEqual([]);
-    expect(onSpeechStart.mock.calls).toEqual([['first', 0]]);
+    expect(onSpeechStart.mock.calls).toEqual([['first']]);
     engine.stop();
   });
 
@@ -553,14 +550,11 @@ describe('PlaybackEngine action navigation', () => {
     await vi.advanceTimersByTimeAsync(2500);
     await flushPromises();
 
-    expect(onEffectFire).toHaveBeenCalledWith(
-      {
-        kind: 'spotlight',
-        targetId: 'box',
-        dimOpacity: undefined,
-      },
-      1,
-    );
+    expect(onEffectFire).toHaveBeenCalledWith({
+      kind: 'spotlight',
+      targetId: 'box',
+      dimOpacity: undefined,
+    });
   });
 
   it('jumping while paused positions the cursor without autoplay', async () => {
@@ -747,189 +741,5 @@ describe('PlaybackEngine action navigation', () => {
     expect(exhaustedAtDiscussionEnd).toEqual([false]);
     expect(engine.getSnapshot().actionIndex).toBe(0);
     expect(engine.getMode()).toBe('idle');
-  });
-});
-
-describe('sandbox media silence before narration', () => {
-  afterEach(() => vi.useRealTimers());
-
-  it.each(['blocked', 'interrupted', 'stopped'] as const)(
-    'persists the next guarded speech when its silence wait is %s',
-    async (outcome) => {
-      const gate = deferred<boolean>();
-      const beforeSpeech = vi.fn().mockResolvedValueOnce(true).mockReturnValueOnce(gate.promise);
-      const audio = createAudioPlayer(async () => true);
-      const currentScene = scene([speech('first'), speech('second')]);
-      let persisted = '';
-      const engine = new PlaybackEngine([currentScene], createActionEngine().engine, audio.player, {
-        beforeSpeech,
-        onProgress: (snapshot) => (persisted = JSON.stringify(snapshot)),
-      });
-      engine.start();
-      await flushPromises();
-      expect(audio.player.play).toHaveBeenCalledOnce();
-      audio.fireEnded();
-      expect(beforeSpeech).toHaveBeenCalledTimes(2);
-      if (outcome === 'interrupted') engine.pause();
-      if (outcome === 'stopped') engine.stop();
-      gate.resolve(false);
-      await flushPromises();
-      expect(engine.getMode()).toBe(outcome === 'stopped' ? 'idle' : 'paused');
-      if (outcome !== 'stopped') expect(engine.getSnapshot().actionIndex).toBe(1);
-      const saved = JSON.parse(persisted);
-      engine.stop();
-      expect(saved.actionIndex).toBe(1);
-
-      const onSpeechStart = vi.fn();
-      const restored = new PlaybackEngine(
-        [currentScene],
-        createActionEngine().engine,
-        createAudioPlayer(async () => true).player,
-        { onSpeechStart },
-      );
-      restored.restoreFromSnapshot(saved);
-      restored.continuePlayback();
-      expect(onSpeechStart.mock.calls).toEqual([['second', 1]]);
-      restored.stop();
-    },
-  );
-
-  it.each([false, true])(
-    'keeps a resumed reading timer gated when frame media starts: %s',
-    async (mediaStarts) => {
-      vi.useFakeTimers();
-      const beforeSpeech = vi.fn().mockResolvedValue(true);
-      const pauseBuffer = vi.fn();
-      const onSpeechEnd = vi.fn();
-      const engine = new PlaybackEngine(
-        [scene([speech('reading', 'First reading line')])],
-        createActionEngine().engine,
-        createAudioPlayer(async () => false).player,
-        { beforeSpeech, onSpeechEnd },
-      );
-      engine.start();
-      await vi.advanceTimersByTimeAsync(100);
-      expect(engine.isNarrating()).toBe(true);
-      engine.pause();
-      expect(engine.isNarrating()).toBe(false);
-      const retainedFrame = deferred<boolean>();
-      beforeSpeech.mockImplementation(() =>
-        Promise.all([Promise.resolve(true), retainedFrame.promise]).then((results) =>
-          results.every(Boolean),
-        ),
-      );
-      const resumed = engine.resume();
-      // The active frame already acknowledged; another pooled frame is still pending.
-      await vi.advanceTimersByTimeAsync(0);
-      if (mediaStarts && engine.isNarrating()) {
-        engine.pause();
-        pauseBuffer();
-      }
-      retainedFrame.resolve(true);
-      await resumed;
-      await vi.advanceTimersByTimeAsync(10_000);
-      if (mediaStarts) {
-        expect(engine.getMode()).toBe('paused');
-        expect(pauseBuffer).toHaveBeenCalledOnce();
-        expect(onSpeechEnd).not.toHaveBeenCalled();
-        beforeSpeech.mockResolvedValue(true);
-        await engine.resume();
-        await vi.advanceTimersByTimeAsync(10_000);
-      } else expect(pauseBuffer).not.toHaveBeenCalled();
-      expect(onSpeechEnd).toHaveBeenCalledOnce();
-      expect(engine.getMode()).toBe('idle');
-      engine.stop();
-    },
-  );
-
-  it('waits before both a new speech and audio resume', async () => {
-    const gate = deferred<boolean>();
-    const beforeSpeech = vi.fn(() => gate.promise);
-    const audio = createAudioPlayer(async () => true).player;
-    const engine = new PlaybackEngine(
-      [scene([speech('one')])],
-      createActionEngine().engine,
-      audio,
-      { beforeSpeech },
-    );
-    engine.start();
-    expect(audio.play).not.toHaveBeenCalled();
-    gate.resolve(true);
-    await flushPromises();
-    expect(audio.play).toHaveBeenCalledOnce();
-    engine.pause();
-    vi.mocked(audio.hasActiveAudio).mockReturnValue(true);
-    const resumedGate = deferred<boolean>();
-    beforeSpeech.mockReturnValue(resumedGate.promise);
-    const resumed = engine.resume();
-    expect(audio.resume).not.toHaveBeenCalled();
-    resumedGate.resolve(true);
-    await resumed;
-    expect(audio.resume).toHaveBeenCalledOnce();
-    engine.stop();
-  });
-
-  it('keeps a live interrupt after a pending resume receives its silence acknowledgement', async () => {
-    const beforeSpeech = vi.fn().mockResolvedValue(true);
-    const audio = createAudioPlayer(async () => true).player;
-    const engine = new PlaybackEngine(
-      [scene([speech('one')])],
-      createActionEngine().engine,
-      audio,
-      { beforeSpeech },
-    );
-    engine.start();
-    await flushPromises();
-    engine.pause();
-    vi.mocked(audio.hasActiveAudio).mockReturnValue(true);
-    const gate = deferred<boolean>();
-    beforeSpeech.mockReturnValue(gate.promise);
-    const resumed = engine.resume();
-    expect(engine.getMode()).toBe('playing');
-    engine.handleUserInterrupt('Explain this');
-    expect(engine.getMode()).toBe('live');
-    gate.resolve(true);
-    await resumed;
-    expect(engine.getMode()).toBe('live');
-    expect(audio.resume).not.toHaveBeenCalled();
-    engine.stop();
-  });
-
-  it('does not start stale speech after navigation cancels the silence wait', async () => {
-    const gate = deferred<boolean>();
-    const audio = createAudioPlayer(async () => true).player;
-    const engine = new PlaybackEngine(
-      [scene([speech('one')])],
-      createActionEngine().engine,
-      audio,
-      { beforeSpeech: () => gate.promise },
-    );
-    engine.start();
-    engine.stop();
-    gate.resolve(true);
-    await flushPromises();
-    expect(audio.play).not.toHaveBeenCalled();
-    expect(engine.getMode()).toBe('idle');
-  });
-
-  it('keeps the speech cursor when silence cannot be confirmed', async () => {
-    const beforeSpeech = vi.fn().mockResolvedValue(false);
-    const audio = createAudioPlayer(async () => true).player;
-    const engine = new PlaybackEngine(
-      [scene([speech('one')])],
-      createActionEngine().engine,
-      audio,
-      { beforeSpeech },
-    );
-    engine.start();
-    await flushPromises();
-    expect(engine.getMode()).toBe('paused');
-    expect(engine.getSnapshot().actionIndex).toBe(0);
-    expect(audio.play).not.toHaveBeenCalled();
-    beforeSpeech.mockResolvedValue(true);
-    await engine.resume();
-    await flushPromises();
-    expect(audio.play).toHaveBeenCalledOnce();
-    engine.stop();
   });
 });

@@ -1,11 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useSyncExternalStore,
-} from 'react';
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import type { ManifestScene } from '@/lib/export/classroom-zip-types';
 import { PlaybackController, type PlaybackState } from './controller';
 import { createMediaLibrary, firstLinkedImage, type MediaLibrary } from './media-library';
@@ -35,7 +28,6 @@ export function usePlayback(
   navigate: (index: number) => void,
 ): Playback {
   const navigateRef = useRef(navigate);
-  const pendingStart = useRef<object | null>(null);
   useEffect(() => {
     navigateRef.current = navigate;
   }, [navigate]);
@@ -49,16 +41,9 @@ export function usePlayback(
       scenes,
       navigate: (next) => navigateRef.current(next),
       ports: {
-        playAudio: async (ref, control) => {
-          while (!control.signal.aborted) {
-            const silence = widgets.pauseMedia();
-            const silent = silence === true || (await silence);
-            if (control.signal.aborted) return false;
-            if (silent) return narration.play(ref, control);
-            controller.pause();
-            await control.gate.whenOpen(control.signal);
-          }
-          return false;
+        playAudio: (ref, control) => {
+          widgets.pauseMedia();
+          return narration.play(ref, control);
         },
         playVideo: (elementId, control) => videos.play(elementId, control),
         sendWidgetMessage: (type, payload) => widgets.send(type, payload),
@@ -74,7 +59,6 @@ export function usePlayback(
 
   useEffect(
     () => () => {
-      pendingStart.current = null;
       widgets.attach(null);
       controller.dispose();
       narration.stop();
@@ -83,9 +67,9 @@ export function usePlayback(
     [controller, media, narration, widgets],
   );
 
-  // Refs are attached; cancel the old run before detached-frame promises continue.
-  useLayoutEffect(() => {
-    pendingStart.current = null;
+  // Effects run after the commit, so the new scene's video elements and
+  // iframe are registered before its actions start.
+  useEffect(() => {
     controller.sceneShown(index);
   }, [controller, index]);
 
@@ -93,32 +77,21 @@ export function usePlayback(
   const linkedMediaMissing = useSyncExternalStore(media.subscribe, media.linkedMediaMissing);
   useEffect(() => media.probeLinkedMedia(), [media]);
 
-  const play = useCallback(async () => {
-    const request = {};
-    pendingStart.current = request;
-    // Prime inside the gesture; the real clip waits for the frame to be silent.
+  const play = useCallback(() => {
     narration.prime();
-    // Navigation unmounts the old frame; the destination guards its own narration.
-    if (!controller.willNavigateOnPlay()) {
-      const silence = widgets.pauseMedia();
-      if (silence !== true && !(await silence)) {
-        if (pendingStart.current === request) pendingStart.current = null;
-        return;
-      }
-    }
-    if (pendingStart.current !== request) return;
-    pendingStart.current = null;
     videos.pauseManual();
+    widgets.pauseMedia();
     controller.play();
   }, [controller, narration, videos, widgets]);
-  const pause = useCallback(() => {
-    pendingStart.current = null;
-    controller.pause();
-  }, [controller]);
   const toggle = useCallback(() => {
-    if (pendingStart.current || controller.getState().mode === 'playing') pause();
-    else void play();
-  }, [controller, pause, play]);
+    narration.prime();
+    if (controller.getState().mode !== 'playing') {
+      videos.pauseManual();
+      widgets.pauseMedia();
+    }
+    controller.toggle();
+  }, [controller, narration, videos, widgets]);
+  const pause = useCallback(() => controller.pause(), [controller]);
   const dismissDiscussion = useCallback(() => controller.dismissDiscussion(), [controller]);
 
   return {

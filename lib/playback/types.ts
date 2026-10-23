@@ -30,15 +30,15 @@ export interface TriggerEvent {
 
 /** Playback engine callbacks */
 export interface PlaybackEngineCallbacks {
-  /** Await sandbox media silence before starting or resuming narration. */
-  beforeSpeech?: () => Promise<boolean>;
+  /** Notify frame media before narration, without waiting for a reply. */
+  beforeSpeech?: () => void;
   onModeChange?: (mode: EngineMode) => void;
   onSceneChange?: (sceneId: string) => void;
-  onSpeechStart?: (text: string, actionIndex: number) => void;
+  onSpeechStart?: (text: string) => void;
   onSpeechEnd?: () => void;
   onTextDelta?: (content: string) => void;
   onSpeakerChange?: (role: string) => void;
-  onEffectFire?: (effect: Effect, actionIndex: number) => void;
+  onEffectFire?: (effect: Effect) => void;
 
   // Proactive discussion
   onProactiveShow?: (trigger: TriggerEvent) => void;

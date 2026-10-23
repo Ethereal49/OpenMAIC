@@ -310,8 +310,8 @@ export class WidgetChannel {
   private mediaSession: ReturnType<typeof createInteractiveMediaSession> | null = null;
   onMediaPlay: (() => void) | null = null;
 
-  pauseMedia(): true | Promise<boolean> {
-    return this.mediaSession?.pause() ?? true;
+  pauseMedia(): void {
+    this.mediaSession?.pause();
   }
   private queue: Array<Record<string, unknown>> = [];
 
@@ -332,7 +332,6 @@ export class WidgetChannel {
 
   markLoaded(frame: HTMLIFrameElement): void {
     if (frame !== this.frame) return;
-    this.mediaSession?.loaded();
     this.loaded = true;
     const pending = this.queue;
     this.queue = [];

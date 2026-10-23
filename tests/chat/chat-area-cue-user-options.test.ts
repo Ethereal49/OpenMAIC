@@ -36,59 +36,6 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-it('restores legacy lecture ordinals without duplicating saved or retried speech', async () => {
-  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
-  vi.useFakeTimers();
-  fixture.state.chats = [
-    {
-      id: 'legacy-lecture',
-      type: 'lecture',
-      title: 'Saved lecture',
-      status: 'completed',
-      sceneId: 'scene-1',
-      lastActionIndex: 0,
-      messages: [
-        {
-          id: 'lecture-message',
-          role: 'assistant',
-          parts: [{ type: 'text', text: 'Already saved' }],
-        },
-      ],
-      config: { agentIds: ['default-1'] },
-      toolCalls: [],
-      pendingToolCalls: [],
-      createdAt: 1,
-      updatedAt: 2,
-    },
-  ];
-  const root = createRoot(document.createElement('div'));
-  const ref = createRef<ChatAreaRef>();
-  try {
-    await act(async () => root.render(createElement(ChatArea, { ref })));
-    let sessionId!: string;
-    await act(async () => {
-      sessionId = await ref.current!.startLecture('scene-1');
-    });
-    expect(sessionId).toBe('legacy-lecture');
-    await act(async () => {
-      const saved = { id: 'saved', type: 'speech' as const, text: 'Already saved' };
-      ref.current!.addLectureMessage(sessionId, saved, 0);
-      ref.current!.addLectureMessage(sessionId, saved, 0);
-      ref.current!.addLectureMessage(sessionId, { id: 'new', type: 'speech', text: 'New line' }, 1);
-      await vi.advanceTimersByTimeAsync(3000);
-    });
-    const restored = fixture.state.chats[0]!;
-    const text = restored.messages[0]!.parts.filter((part) => part.type === 'text')
-      .map((part) => part.text)
-      .join('');
-    expect(text.match(/Already saved/g)).toHaveLength(1);
-    expect(text).toContain('New line');
-    expect(restored.lastActionIndex).toBe(1);
-  } finally {
-    act(() => root.unmount());
-  }
-});
-
 it('carries string suggestions through real SSE without saving them and sends return-to-lesson as ordinary text', async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.useFakeTimers();

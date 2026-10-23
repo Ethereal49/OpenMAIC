@@ -13,7 +13,7 @@ export type ObservationCapture = (
 import { create } from 'zustand';
 
 type WidgetMessagePayload = Record<string, unknown>;
-type WidgetSendMessage = (type: string, payload: WidgetMessagePayload) => void | Promise<boolean>;
+type WidgetSendMessage = (type: string, payload: WidgetMessagePayload) => void;
 
 interface PendingWidgetMessage {
   readonly type: string;

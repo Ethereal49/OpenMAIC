@@ -90,8 +90,6 @@ export class PlaybackEngine {
   private browserTTSPausedChunks: string[] = []; // remaining chunks saved on pause (for cancel+re-speak)
   private speechTimerRemaining: number = 0; // remaining ms (set on pause)
   private playbackGeneration: number = 0;
-  private pendingSpeech: { generation: number; actionIndex: number } | null = null;
-  private actionRewound = false;
   // Keep the cursor on speech for progress/persistence; defer its cues until playback starts.
   private pendingNavigationSpeechIndex: number | null = null;
 
@@ -142,7 +140,6 @@ export class PlaybackEngine {
   /** Restore playback position from a snapshot */
   restoreFromSnapshot(snapshot: PlaybackSnapshot): void {
     this.pendingNavigationSpeechIndex = null;
-    this.actionRewound = false;
     this.sceneIndex = snapshot.sceneIndex;
     this.actionIndex = snapshot.actionIndex;
     this.consumedDiscussions = new Set(snapshot.consumedDiscussions);
@@ -160,7 +157,7 @@ export class PlaybackEngine {
     this.pendingNavigationSpeechIndex = null;
     this.invalidatePlaybackGeneration();
     this.setMode('playing');
-    this.processNext(this.playbackGeneration);
+    this.processNext();
   }
 
   /** idle → playing (continue from current position, e.g. after discussion end) */
@@ -171,7 +168,7 @@ export class PlaybackEngine {
     }
     this.invalidatePlaybackGeneration();
     this.setMode('playing');
-    this.processNext(this.playbackGeneration);
+    this.processNext();
   }
 
   canJumpToAction(actionIndex: number): boolean {
@@ -223,28 +220,10 @@ export class PlaybackEngine {
     return true;
   }
 
-  isNarrating(): boolean {
-    return (
-      this.mode === 'playing' &&
-      !!(
-        this.pendingSpeech ||
-        this.audioPlayer.hasActiveAudio() ||
-        this.browserTTSActive ||
-        this.speechTimer ||
-        this.speechTimerRemaining > 0
-      )
-    );
-  }
-
   /** playing → paused | live → paused (abort SSE, truncate, topic pending) */
   pause(): void {
     if (this.mode === 'playing') {
-      const pending =
-        this.pendingSpeech?.generation === this.playbackGeneration ? this.pendingSpeech : null;
-      // A rejected resume preflight can pause an already requeued action again.
-      const actionRewound = this.actionRewound;
       this.invalidatePlaybackGeneration();
-      this.actionRewound = actionRewound;
       // Cancel pending timers
       if (this.triggerDelayTimer) {
         clearTimeout(this.triggerDelayTimer);
@@ -259,14 +238,7 @@ export class PlaybackEngine {
         clearTimeout(this.speechTimer);
         this.speechTimer = null;
       }
-      if (pending) {
-        this.actionIndex = pending.actionIndex;
-        this.actionRewound = true;
-        this.pendingSpeech = null;
-        this.callbacks.onProgress?.(this.getSnapshot());
-      }
       this.setMode('paused');
-      if (pending) this.audioPlayer.stop();
       // Freeze TTS — but skip if waiting on ProactiveCard (no active speech)
       if (!this.currentTrigger) {
         if (this.browserTTSActive) {
@@ -291,7 +263,7 @@ export class PlaybackEngine {
   }
 
   /** paused → playing (TTS resume) | paused (in discussion) → live */
-  async resume(): Promise<void> {
+  resume(): void {
     if (this.mode !== 'paused') {
       log.warn('Cannot resume: not paused, mode is', this.mode);
       return;
@@ -301,11 +273,13 @@ export class PlaybackEngine {
       // Resume discussion → live
       this.currentTopicState = 'active';
       this.setMode('live');
-    } else {
+    } else if (this.currentTrigger) {
+      // Waiting on ProactiveCard — just resume mode, don't touch audio
       this.setMode('playing');
-      const generation = this.playbackGeneration;
-      if (this.currentTrigger) return;
-      if (this.callbacks.beforeSpeech && !(await this.waitForMedia(generation))) return;
+    } else {
+      // Resume lecture
+      this.setMode('playing');
+      this.callbacks.beforeSpeech?.();
       if (this.browserTTSPausedChunks.length > 0) {
         // Browser TTS was paused via cancel — re-speak remaining chunks
         this.browserTTSActive = true;
@@ -336,8 +310,8 @@ export class PlaybackEngine {
           if (this.mode === 'playing') this.processNext(generation);
         }, this.speechTimerRemaining);
       } else {
-        // Requeued speech must clear its media guard before callers resume buffering.
-        await this.processNext();
+        // TTS finished while paused, continue to next event
+        this.processNext();
       }
     }
   }
@@ -468,17 +442,15 @@ export class PlaybackEngine {
 
   /** User sends a message during playback → interrupt → live mode */
   handleUserInterrupt(text: string): void {
-    const interruptedIndex =
-      this.pendingSpeech?.generation === this.playbackGeneration
-        ? this.pendingSpeech.actionIndex
-        : Math.max(0, this.actionIndex - (this.actionRewound ? 0 : 1));
     this.invalidatePlaybackGeneration();
     if (this.mode === 'playing' || this.mode === 'paused') {
-      // Pending work already owns the cursor; otherwise replay the interrupted
-      // sentence. Keep the first saved position (e.g. live → paused → message).
+      // Save lecture state BEFORE stopping audio — actionIndex was already
+      // incremented by processNext, so subtract 1 to replay the interrupted
+      // sentence when resuming.  Guard against overwriting a previously saved
+      // position (e.g. live → paused → new message).
       if (this.savedSceneIndex === null) {
         this.savedSceneIndex = this.sceneIndex;
-        this.savedActionIndex = interruptedIndex;
+        this.savedActionIndex = Math.max(0, this.actionIndex - 1);
       }
 
       // Cancel pending trigger delay
@@ -524,8 +496,6 @@ export class PlaybackEngine {
 
   private invalidatePlaybackGeneration(): number {
     this.playbackGeneration += 1;
-    this.pendingSpeech = null;
-    this.actionRewound = false;
     return this.playbackGeneration;
   }
 
@@ -580,33 +550,15 @@ export class PlaybackEngine {
     return { action: res.action, sceneId: res.sceneId };
   }
 
-  private fireVisualCue(
-    action: Extract<Action, { type: 'spotlight' | 'laser' }>,
-    actionIndex: number,
-  ): void {
+  private fireVisualCue(action: Extract<Action, { type: 'spotlight' | 'laser' }>): void {
     this.actionEngine.execute(action);
-    this.callbacks.onEffectFire?.(
-      {
-        kind: action.type,
-        targetId: action.elementId,
-        ...(action.type === 'spotlight'
-          ? { dimOpacity: action.dimOpacity }
-          : { color: action.color }),
-      } as Effect,
-      actionIndex,
-    );
-  }
-
-  private async waitForMedia(generation: number): Promise<boolean> {
-    if (this.callbacks.beforeSpeech) {
-      const silent = await this.callbacks.beforeSpeech();
-      if (this.mode !== 'playing' || !this.isCurrentGeneration(generation)) return false;
-      if (!silent) {
-        this.pause();
-        return false;
-      }
-    }
-    return this.mode === 'playing' && this.isCurrentGeneration(generation);
+    this.callbacks.onEffectFire?.({
+      kind: action.type,
+      targetId: action.elementId,
+      ...(action.type === 'spotlight'
+        ? { dimOpacity: action.dimOpacity }
+        : { color: action.color }),
+    } as Effect);
   }
 
   /**
@@ -645,35 +597,27 @@ export class PlaybackEngine {
       for (let i = getSpeechVisualCueStartIndex(actions, targetIndex); i < targetIndex; i++) {
         if (this.mode !== 'playing' || !this.isCurrentGeneration(generation)) return;
         const cue = actions[i];
-        if (cue.type === 'spotlight' || cue.type === 'laser') this.fireVisualCue(cue, i);
+        if (cue.type === 'spotlight' || cue.type === 'laser') this.fireVisualCue(cue);
       }
       if (this.mode !== 'playing' || !this.isCurrentGeneration(generation)) return;
     }
 
-    const actionIndex = this.actionIndex;
-    const pending = action.type === 'speech' ? { generation, actionIndex } : null;
-    this.pendingSpeech = pending;
-    // Publish before waiting or advancing so cleanup can persist the current
-    // action, which must be replayed on restore if speech is unfinished.
+    // Notify progress BEFORE advancing the cursor so the snapshot points at
+    // the current action.  On restore the same action will be replayed — this
+    // is the desired behaviour for speech (user may have only heard half).
     this.callbacks.onProgress?.(this.getSnapshot());
-    if (action.type === 'speech' && this.callbacks.beforeSpeech) {
-      // The cursor still belongs to this unconsumed action during its asynchronous guard.
-      this.actionRewound = true;
-      if (!(await this.waitForMedia(generation))) return;
-    }
 
-    this.actionRewound = false;
     this.actionIndex++;
 
     switch (action.type) {
       case 'speech': {
         const speechAction = action as SpeechAction;
-        this.callbacks.onSpeechStart?.(speechAction.text, actionIndex);
+        this.callbacks.beforeSpeech?.();
+        this.callbacks.onSpeechStart?.(speechAction.text);
 
         // onEnded → processNext; if paused, resume() will call processNext
         this.audioPlayer.onEnded(() => {
           if (!this.isCurrentGeneration(generation)) return;
-          this.pendingSpeech = null;
           this.callbacks.onSpeechEnd?.();
           if (this.mode === 'playing') {
             this.processNext(generation);
@@ -711,7 +655,6 @@ export class PlaybackEngine {
           // fallback of last resort; converted documents carry no audioUrl.
           .play(speechAction.audioId || '', (speechAction as LegacySpeechAction).audioUrl)
           .then((audioStarted) => {
-            if (this.pendingSpeech === pending) this.pendingSpeech = null;
             if (!this.isCurrentGeneration(generation)) return;
             if (!audioStarted) {
               // No pre-generated audio — try browser-native TTS only when it is
@@ -729,7 +672,6 @@ export class PlaybackEngine {
             }
           })
           .catch((err) => {
-            if (this.pendingSpeech === pending) this.pendingSpeech = null;
             if (!this.isCurrentGeneration(generation)) return;
             log.error('TTS error:', err);
             scheduleReadingTimer();
@@ -740,7 +682,7 @@ export class PlaybackEngine {
       case 'spotlight':
       case 'laser': {
         // Fire-and-forget visual effects via ActionEngine
-        this.fireVisualCue(action, actionIndex);
+        this.fireVisualCue(action);
         // Don't block — continue immediately (use queueMicrotask to avoid
         // stack overflow from deep synchronous recursion when many consecutive
         // spotlight/laser actions appear in sequence)

@@ -8,7 +8,6 @@ import {
 import { PauseGate, type StepControl } from '@/lib/standalone-player/playback/pause-gate';
 import type { MediaLibrary } from '@/lib/standalone-player/playback/media-library';
 import { MAX_VIDEO_WAIT_MS } from '@/lib/choreography/timing';
-import { mediaBridgeScript } from '@/lib/interactive/media-bridge';
 
 /**
  * jsdom implements no media playback: give an element scriptable play/pause
@@ -382,29 +381,6 @@ describe('VideoRegistry', () => {
 });
 
 describe('WidgetChannel', () => {
-  it('flushes widgets on load even when the media bridge never answers', async () => {
-    vi.useFakeTimers();
-    const frame = document.createElement('iframe');
-    frame.srcdoc = mediaBridgeScript('current');
-    document.body.append(frame);
-    const channel = new WidgetChannel();
-    const post = vi.spyOn(frame.contentWindow!, 'postMessage');
-    channel.attach(frame);
-    channel.send('FIRST', { order: 1 });
-    channel.markLoaded(frame);
-    channel.send('SECOND', { order: 2 });
-    expect(post.mock.calls.filter(([data]) => ['FIRST', 'SECOND'].includes(data.type))).toEqual([
-      [{ type: 'FIRST', order: 1 }, '*'],
-      [{ type: 'SECOND', order: 2 }, '*'],
-    ]);
-    const pause = channel.pauseMedia();
-    await vi.advanceTimersByTimeAsync(1000);
-    await expect(pause).resolves.toBe(true);
-    channel.attach(null);
-    frame.remove();
-    vi.useRealTimers();
-  });
-
   it('queues messages until the iframe loaded, then posts them in order', () => {
     const channel = new WidgetChannel();
     const frame = document.createElement('iframe');

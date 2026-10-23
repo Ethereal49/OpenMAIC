@@ -200,14 +200,10 @@ export class AudioPlayer {
       // Assignment rather than addEventListener: the element is reused, so a
       // listener would otherwise accumulate once per segment and fire the
       // callback several times for one line.
-      const audio = this.audio;
-      const onEnded = () => {
-        if (audio.onended !== onEnded) return;
-        audio.onended = null;
+      this.audio.onended = () => {
         this.releaseBlobUrl(blobUrl);
         this.onEndedCallback?.();
       };
-      audio.onended = onEnded;
 
       // Play. If play() rejects (autoplay policy, decode error, interrupted
       // load) the 'ended' listener never fires, so revoke the blob URL here to
@@ -215,7 +211,6 @@ export class AudioPlayer {
       try {
         await this.audio.play();
       } catch (playError) {
-        if (audio.onended === onEnded) audio.onended = null;
         this.releaseBlobUrl(blobUrl);
         throw playError;
       }
@@ -260,7 +255,7 @@ export class AudioPlayer {
    * Resume playback
    */
   public resume(): void {
-    if (this.audio?.paused && !this.audio.ended) {
+    if (this.audio?.paused) {
       this.audio.playbackRate = this.playbackRate;
       this.audio.play().catch((error) => {
         log.error('Failed to resume audio:', error);
@@ -276,11 +271,11 @@ export class AudioPlayer {
   }
 
   /**
-   * Whether a line still owns its completion callback, including a queued EOF event.
+   * Whether there is active audio (playing or paused, but not ended)
    * Used to decide whether to resume playback or skip to the next line
    */
   public hasActiveAudio(): boolean {
-    return this.audio !== null && this.audio.onended !== null;
+    return this.audio !== null;
   }
 
   /**

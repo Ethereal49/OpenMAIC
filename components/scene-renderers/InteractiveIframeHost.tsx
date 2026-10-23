@@ -247,7 +247,7 @@ function PooledIframe({
   const mediaSession = useRef<ReturnType<typeof createInteractiveMediaSession> | null>(null);
   const mediaId = mediaDocumentId(entry.srcDoc);
   useLayoutEffect(() => {
-    if (!iframeRef.current || !mediaId) return;
+    if (!iframeRef.current || !mediaId || !visible) return;
     const session = createInteractiveMediaSession(iframeRef.current, mediaId, () =>
       onMediaPlay?.(),
     );
@@ -256,8 +256,7 @@ function PooledIframe({
       session.dispose();
       mediaSession.current = null;
     };
-  }, [mediaId, onMediaPlay]);
-  useLayoutEffect(() => mediaSession.current?.sync(visible), [mediaId, onMediaPlay, visible]);
+  }, [mediaId, onMediaPlay, visible]);
   const runtimeErrors = useSceneRuntimeErrors((state) => state.errors[sceneId]);
   const runtimeErrorSignature = runtimeErrors?.join('\n') ?? '';
   const [dismissedRuntimeSignature, setDismissedRuntimeSignature] = useState<string | null>(null);
@@ -337,7 +336,10 @@ function PooledIframe({
   // the callback reads contentWindow lazily at send time.
   useLayoutEffect(() => {
     const send = (type: string, payload: Record<string, unknown>) => {
-      if (type === MEDIA_CONTROL) return mediaSession.current?.pause() ?? Promise.resolve(true);
+      if (type === MEDIA_CONTROL) {
+        mediaSession.current?.pause();
+        return;
+      }
       iframeRef.current?.contentWindow?.postMessage({ type, ...payload }, '*');
     };
     return registerIframe(sceneId, send, documentToken);
@@ -463,7 +465,6 @@ function PooledIframe({
         ref={iframeRef}
         srcDoc={observation.html}
         onLoad={() => {
-          mediaSession.current?.loaded(visible);
           observationSession.current?.dispose();
           observationSession.current =
             iframeRef.current && observation.identity

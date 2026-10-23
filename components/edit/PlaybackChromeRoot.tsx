@@ -41,8 +41,8 @@ import { loadCursor, saveCursor, type PlaybackCursor } from '@/lib/playback/curs
 import { ActionEngine } from '@/lib/action/engine';
 import { createAudioPlayer } from '@/lib/utils/audio-player';
 import { useDiscussionTTS } from '@/lib/hooks/use-discussion-tts';
-import { MEDIA_CONTROL } from '@/lib/interactive/media-bridge';
 import { useWidgetIframeStore } from '@/lib/store/widget-iframe';
+import { MEDIA_CONTROL } from '@/lib/interactive/media-bridge';
 import type { AudioIndicatorState } from '@/components/roundtable/audio-indicator';
 import type { Action, DiscussionAction, SpeechAction } from '@/lib/types/action';
 import { cn } from '@/lib/utils';
@@ -276,14 +276,6 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
     const [audioIndicatorState, setAudioIndicatorState] = useState<AudioIndicatorState>('idle');
     const [audioAgentId, setAudioAgentId] = useState<string | null>(null);
 
-    const pauseInteractiveMedia = useCallback(async () => {
-      const results = await Promise.all(
-        Object.values(useWidgetIframeStore.getState().sendMessageByScene).map((send) =>
-          send(MEDIA_CONTROL, {}),
-        ),
-      );
-      return results.every((silent) => silent !== false);
-    }, []);
     const discussionTTS = useDiscussionTTS({
       enabled: ttsEnabled && !ttsMuted,
       agents: selectedAgents,
@@ -314,8 +306,13 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
     const audioPlayerRef = useRef(createAudioPlayer());
     const chatAreaRef = useRef<ChatAreaRef>(null);
     const lectureSessionIdRef = useRef<string | null>(null);
+    const lectureActionCounterRef = useRef(0);
     const currentPlaybackActionIndexRef = useRef<number | null>(currentPlaybackActionIndex);
     const activeSceneIdRef = useRef<string | null>(currentSceneId);
+    const pauseInteractiveMedia = useCallback(() => {
+      const sceneId = activeSceneIdRef.current;
+      if (sceneId) useWidgetIframeStore.getState().sendMessageByScene[sceneId]?.(MEDIA_CONTROL, {});
+    }, []);
     const discussionAbortRef = useRef<AbortController | null>(null);
     const presentationIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const cursorSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -596,7 +593,7 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
         },
         pauseForInteractiveMedia: () => {
           const engine = engineRef.current;
-          if (!engine?.isNarrating()) return;
+          if (engine?.getMode() !== 'playing') return;
           engine.pause();
           if (lectureSessionIdRef.current)
             chatAreaRef.current?.pauseBuffer(lectureSessionIdRef.current);
@@ -805,13 +802,6 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
           widgetSendMessage,
         );
 
-        // Preserve persisted chat-only ordinals while retries reuse the same source action.
-        const lectureActionOrdinal = (actionIndex: number) =>
-          currentScene.actions
-            ?.slice(0, actionIndex)
-            .filter(({ type }) => type === 'speech' || type === 'spotlight' || type === 'laser')
-            .length ?? 0;
-
         // Create new PlaybackEngine
         const engine = new PlaybackEngine([currentScene], actionEngine, audioPlayerRef.current, {
           beforeSpeech: pauseInteractiveMedia,
@@ -836,15 +826,17 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
           onSceneChange: (_sceneId) => {
             // Scene change handled by engine
           },
-          onSpeechStart: (text, actionIndex) => {
+          onSpeechStart: (text) => {
             setLectureSpeech(text);
+            // Add to lecture session with incrementing index for dedup
             // Chat area pacing is handled by the StreamBuffer (onTextReveal)
             if (lectureSessionIdRef.current) {
+              const idx = lectureActionCounterRef.current++;
               const speechId = `speech-${Date.now()}`;
               chatAreaRef.current?.addLectureMessage(
                 lectureSessionIdRef.current,
                 { id: speechId, type: 'speech', text } as Action,
-                lectureActionOrdinal(actionIndex),
+                idx,
               );
               // Track active bubble for highlight (Issue 8)
               const msgId = chatAreaRef.current?.getLectureMessageId(lectureSessionIdRef.current!);
@@ -857,12 +849,13 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
             // Clearing here causes fallback to idleText (first sentence).
             setActiveBubbleId(null);
           },
-          onEffectFire: (effect: Effect, actionIndex) => {
-            // Cues share the speech timeline, including navigation replays.
+          onEffectFire: (effect: Effect) => {
+            // Add to lecture session with incrementing index
             if (
               lectureSessionIdRef.current &&
               (effect.kind === 'spotlight' || effect.kind === 'laser')
             ) {
+              const idx = lectureActionCounterRef.current++;
               chatAreaRef.current?.addLectureMessage(
                 lectureSessionIdRef.current,
                 {
@@ -870,7 +863,7 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
                   type: effect.kind,
                   elementId: effect.targetId,
                 } as Action,
-                lectureActionOrdinal(actionIndex),
+                idx,
               );
             }
           },
@@ -992,6 +985,7 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
                 return;
               }
               lectureSessionIdRef.current = sessionId;
+              lectureActionCounterRef.current = 0;
             }
             if (engineRef.current !== engine) return;
             engine.start();
@@ -1197,8 +1191,7 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
           chatAreaRef.current?.pauseBuffer(lectureSessionIdRef.current);
         }
       } else if (mode === 'paused') {
-        await engine.resume();
-        if (engineRef.current !== engine || engine.getMode() !== 'playing') return;
+        engine.resume();
         // Resume lecture buffer
         if (lectureSessionIdRef.current) {
           chatAreaRef.current?.resumeBuffer(lectureSessionIdRef.current);
@@ -1219,6 +1212,7 @@ export const PlaybackChromeRoot = forwardRef<PlaybackChromeRootHandle, PlaybackC
         if (engineRef.current !== engine) return;
         if (wasCompleted) {
           // Restart from beginning (user clicked restart after completion)
+          lectureActionCounterRef.current = 0;
           engine.start();
         } else {
           // Continue from current position (e.g. after discussion end)
