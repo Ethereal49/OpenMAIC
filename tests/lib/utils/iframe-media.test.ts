@@ -62,7 +62,7 @@ describe('HTML media coordination', () => {
     const doc = frame.contentDocument!;
     const view = frame.contentWindow as Window & typeof globalThis;
     doc.body.innerHTML = '<audio></audio><video></video><button>Button</button>';
-    const media = Array.from(doc.querySelectorAll('audio, video'));
+    const media = Array.from(doc.querySelectorAll<HTMLMediaElement>('audio, video'));
     const pauses = media.map((element) => vi.spyOn(element, 'pause').mockImplementation(() => {}));
     const parent = { postMessage: vi.fn() };
     let receive!: (event: { source: unknown; data: unknown }) => void;
